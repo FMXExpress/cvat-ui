@@ -13,6 +13,9 @@ import Icon, {
 } from '@ant-design/icons';
 import Slider, { SliderMarks } from 'antd/lib/slider';
 import InputNumber from 'antd/lib/input-number';
+import Input from 'antd/lib/input';
+import Tag from 'antd/lib/tag';
+import Button from 'antd/lib/button';
 import Text from 'antd/lib/typography/Text';
 import Modal from 'antd/lib/modal';
 import Tooltip from 'antd/lib/tooltip';
@@ -41,6 +44,7 @@ interface Props {
     deleteFrameShortcut: string;
     focusFrameInputShortcut: string;
     searchFrameByNameShortcut: string;
+    selectedFrames: number[];
     showSearchFrameByName: boolean;
     inputFrameRef: React.RefObject<HTMLInputElement>;
     keyMap: KeyMap;
@@ -53,6 +57,9 @@ interface Props {
     onRestoreFrame(): void;
     switchNavigationBlocked(blocked: boolean): void;
     switchShowSearchPallet(visible: boolean): void;
+    onAddSelectedFrames(frames: number[]): void;
+    onRemoveSelectedFrame(frame: number): void;
+    onClearSelectedFrames(): void;
 }
 
 const componentShortcuts = {
@@ -75,6 +82,18 @@ const componentShortcuts = {
         sequences: [],
         scope: ShortcutScope.ANNOTATION_PAGE,
     },
+    NEXT_SELECTED_FRAME: {
+        name: 'Next selected frame',
+        description: 'Jump to the next selected frame',
+        sequences: ['shift+right'],
+        scope: ShortcutScope.ANNOTATION_PAGE,
+    },
+    PREV_SELECTED_FRAME: {
+        name: 'Previous selected frame',
+        description: 'Jump to the previous selected frame',
+        sequences: ['shift+left'],
+        scope: ShortcutScope.ANNOTATION_PAGE,
+    },
 };
 
 registerComponentShortcuts(componentShortcuts);
@@ -92,6 +111,7 @@ function PlayerNavigation(props: Props): JSX.Element {
         deleteFrameShortcut,
         focusFrameInputShortcut,
         searchFrameByNameShortcut,
+        selectedFrames,
         inputFrameRef,
         ranges,
         keyMap,
@@ -105,9 +125,13 @@ function PlayerNavigation(props: Props): JSX.Element {
         switchNavigationBlocked,
         switchShowSearchPallet,
         showSearchFrameByName,
+        onAddSelectedFrames,
+        onRemoveSelectedFrame,
+        onClearSelectedFrames,
     } = props;
 
     const [frameInputValue, setFrameInputValue] = useState<number>(frameNumber);
+    const [selectedFramesInput, setSelectedFramesInput] = useState<string>('');
 
     const playerSliderPlugins = usePlugins(
         (state: CombinedState) => state.plugins.components.annotationPage.player.slider,
@@ -157,6 +181,25 @@ function PlayerNavigation(props: Props): JSX.Element {
                 switchShowSearchPallet(true);
             }
         },
+        NEXT_SELECTED_FRAME: (event: KeyboardEvent | undefined) => {
+            event?.preventDefault();
+            if (selectedFrames.length) {
+                const next = selectedFrames.find((value) => value > frameNumber) ?? selectedFrames[0];
+                if (typeof next !== 'undefined') {
+                    onInputChange(next);
+                }
+            }
+        },
+        PREV_SELECTED_FRAME: (event: KeyboardEvent | undefined) => {
+            event?.preventDefault();
+            if (selectedFrames.length) {
+                const previous = [...selectedFrames].reverse().find((value) => value < frameNumber)
+                    ?? selectedFrames[selectedFrames.length - 1];
+                if (typeof previous !== 'undefined') {
+                    onInputChange(previous);
+                }
+            }
+        },
     };
 
     const onSearchIconClick = useCallback(() => {
@@ -168,17 +211,62 @@ function PlayerNavigation(props: Props): JSX.Element {
         opacity: 0.5,
     } : {};
 
-    const marks: SliderMarks = (chapters ?? []).reduce<SliderMarks>((acc, chapter) => {
-        const active = hoveredChapter === chapter.id;
-        const innerAcc = acc ?? {};
-        innerAcc[chapter.start] = {
-            label:
-                    <Tooltip title={`${chapter.metadata.title}`}>
-                        <span className={`ant-slider-mark-chapter ${active ? 'active' : ''}`} />
-                    </Tooltip>,
+    const marks: SliderMarks = {};
+    const combineMarkLabel = (existing: SliderMarks[number] | undefined, nextLabel: React.ReactNode): SliderMarks[number] => {
+        if (!existing) {
+            return { label: nextLabel };
+        }
+
+        const existingLabel = (existing as any).label ?? existing;
+        return {
+            label: (
+                <span className='cvat-player-slider-mark-group'>
+                    {existingLabel}
+                    {nextLabel}
+                </span>
+            ),
         };
-        return innerAcc;
-    }, {});
+    };
+
+    (chapters ?? []).forEach((chapter) => {
+        const active = hoveredChapter === chapter.id;
+        marks[chapter.start] = combineMarkLabel(
+            marks[chapter.start],
+            (
+                <Tooltip title={`${chapter.metadata.title}`}>
+                    <span className={`ant-slider-mark-chapter ${active ? 'active' : ''}`} />
+                </Tooltip>
+            ),
+        );
+    });
+
+    selectedFrames.forEach((frame) => {
+        marks[frame] = combineMarkLabel(
+            marks[frame],
+            (
+                <Tooltip title={`Selected frame #${frame}`}>
+                    <span className='ant-slider-mark-selected-frame' />
+                </Tooltip>
+            ),
+        );
+    });
+
+    const addSelectedFrames = useCallback(() => {
+        if (!selectedFramesInput.trim()) {
+            return;
+        }
+
+        const parsedFrames = selectedFramesInput
+            .split(/[,\s]+/)
+            .map((value) => Number.parseInt(value, 10))
+            .filter((value) => Number.isFinite(value))
+            .map((value) => Math.floor(clamp(value, startFrame, stopFrame)));
+
+        if (parsedFrames.length) {
+            onAddSelectedFrames(parsedFrames);
+            setSelectedFramesInput('');
+        }
+    }, [selectedFramesInput, startFrame, stopFrame, onAddSelectedFrames]);
 
     const deleteFrameIcon = !frameDeleted ? (
         <CVATTooltip title={`Delete the frame ${deleteFrameShortcut}`}>
@@ -251,6 +339,43 @@ function PlayerNavigation(props: Props): JSX.Element {
                             <LinkOutlined className='cvat-player-frame-url-icon' onClick={onURLIconClick} />
                         </CVATTooltip>
                         { deleteFrameIcon }
+                    </Col>
+                </Row>
+                <Row align='middle' className='cvat-player-selected-frames-row'>
+                    <Col className='cvat-player-selected-frames-input'>
+                        <Input
+                            placeholder='Add frames (e.g., 1, 5, 20)'
+                            value={selectedFramesInput}
+                            onChange={(event) => setSelectedFramesInput(event.target.value)}
+                            onPressEnter={addSelectedFrames}
+                            allowClear
+                        />
+                    </Col>
+                    <Col>
+                        <Button type='primary' onClick={addSelectedFrames}>
+                            Add
+                        </Button>
+                    </Col>
+                    {selectedFrames.length > 0 && (
+                        <Col>
+                            <Button type='link' onClick={onClearSelectedFrames}>
+                                Clear
+                            </Button>
+                        </Col>
+                    )}
+                    <Col className='cvat-player-selected-frames-tags'>
+                        {selectedFrames.map((frame) => (
+                            <Tag
+                                key={frame}
+                                closable
+                                onClose={(event) => {
+                                    event.preventDefault();
+                                    onRemoveSelectedFrame(frame);
+                                }}
+                            >
+                                #{frame}
+                            </Tag>
+                        ))}
                     </Col>
                 </Row>
             </Col>
