@@ -133,50 +133,6 @@ function PlayerNavigation(props: Props): JSX.Element {
         }
     }, [frameNumber]);
 
-    const addSelectedFrames = useCallback(() => {
-        if (!selectedFramesInput.trim()) {
-            return;
-        }
-
-        const parsedFrames = selectedFramesInput
-            .split(/[,\s]+/)
-            .map((value) => Number.parseInt(value, 10))
-            .filter((value) => Number.isFinite(value))
-            .map((value) => Math.floor(clamp(value, startFrame, stopFrame)));
-
-        if (parsedFrames.length) {
-            onAddSelectedFrames(parsedFrames);
-            setSelectedFramesInput('');
-        }
-    }, [selectedFramesInput, startFrame, stopFrame, onAddSelectedFrames]);
-
-    const onTraceLabelChange = useCallback((labelID: number) => {
-        const label = labels.find((_label) => _label.id === labelID);
-        if (!label) {
-            return;
-        }
-
-        if (label.type === LabelType.TAG) {
-            dispatch(rememberObject({ activeLabelID: labelID, activeObjectType: ObjectType.TAG }, false));
-        } else if (label.type === LabelType.MASK) {
-            dispatch(rememberObject({
-                activeLabelID: labelID,
-                activeObjectType: ObjectType.SHAPE,
-                activeShapeType: ShapeType.MASK,
-            }, false));
-        } else {
-            dispatch(rememberObject({
-                activeLabelID: labelID,
-                activeObjectType: activeObjectType !== ObjectType.TAG ? activeObjectType : ObjectType.SHAPE,
-                activeShapeType: label.type === LabelType.ANY && activeShapeType !== ShapeType.SKELETON ?
-                    activeShapeType : label.type as unknown as ShapeType,
-            }, false));
-        }
-    }, [labels, activeShapeType, activeObjectType, dispatch]);
-
-    const traceLabelID = labels.some((label) => label.id === activeLabelID && label.type !== LabelType.TAG) ?
-        activeLabelID : undefined;
-
     const showDeleteFrameDialog = useCallback(() => {
         if (!playing) {
             switchNavigationBlocked(true);
