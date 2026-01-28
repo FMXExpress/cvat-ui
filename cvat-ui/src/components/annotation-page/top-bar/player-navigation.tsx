@@ -6,7 +6,6 @@
 import React, {
     useState, useEffect, useCallback, CSSProperties,
 } from 'react';
-import { useDispatch, useSelector } from 'react-redux';
 
 import { Row, Col } from 'antd/lib/grid';
 import Icon, {
@@ -14,10 +13,6 @@ import Icon, {
 } from '@ant-design/icons';
 import Slider, { SliderMarks } from 'antd/lib/slider';
 import InputNumber from 'antd/lib/input-number';
-import Input from 'antd/lib/input';
-import Tag from 'antd/lib/tag';
-import Button from 'antd/lib/button';
-import Select from 'antd/lib/select';
 import Text from 'antd/lib/typography/Text';
 import Modal from 'antd/lib/modal';
 import Tooltip from 'antd/lib/tooltip';
@@ -25,14 +20,12 @@ import Tooltip from 'antd/lib/tooltip';
 import { Workspace, CombinedState } from 'reducers';
 import { RestoreIcon } from 'icons';
 import { registerComponentShortcuts } from 'actions/shortcuts-actions';
-import { rememberObject } from 'actions/annotation-actions';
 import CVATTooltip from 'components/common/cvat-tooltip';
 import { clamp } from 'utils/math';
 import GlobalHotKeys, { KeyMap } from 'utils/mousetrap-react';
 import { ShortcutScope } from 'utils/enums';
 import { subKeyMap } from 'utils/component-subkeymap';
 import { Chapter } from 'cvat-core/src/frames';
-import { LabelType, ObjectType, ShapeType } from 'cvat-core-wrapper';
 import { usePlugins } from 'utils/hooks';
 
 interface Props {
@@ -61,9 +54,6 @@ interface Props {
     onRestoreFrame(): void;
     switchNavigationBlocked(blocked: boolean): void;
     switchShowSearchPallet(visible: boolean): void;
-    onAddSelectedFrames(frames: number[]): void;
-    onRemoveSelectedFrame(frame: number): void;
-    onClearSelectedFrames(): void;
 }
 
 const componentShortcuts = {
@@ -129,26 +119,9 @@ function PlayerNavigation(props: Props): JSX.Element {
         switchNavigationBlocked,
         switchShowSearchPallet,
         showSearchFrameByName,
-        onAddSelectedFrames,
-        onRemoveSelectedFrame,
-        onClearSelectedFrames,
     } = props;
 
     const [frameInputValue, setFrameInputValue] = useState<number>(frameNumber);
-    const [selectedFramesInput, setSelectedFramesInput] = useState<string>('');
-    const dispatch = useDispatch();
-    const {
-        labels,
-        activeLabelID,
-        activeShapeType,
-        activeObjectType,
-    } = useSelector((state: CombinedState) => ({
-        labels: state.annotation.job.labels,
-        activeLabelID: state.annotation.drawing.activeLabelID,
-        activeShapeType: state.annotation.drawing.activeShapeType,
-        activeObjectType: state.annotation.drawing.activeObjectType,
-    }));
-
     const playerSliderPlugins = usePlugins(
         (state: CombinedState) => state.plugins.components.annotationPage.player.slider,
         props,
@@ -382,60 +355,6 @@ function PlayerNavigation(props: Props): JSX.Element {
                             <LinkOutlined className='cvat-player-frame-url-icon' onClick={onURLIconClick} />
                         </CVATTooltip>
                         { deleteFrameIcon }
-                    </Col>
-                </Row>
-                <Row align='middle' className='cvat-player-selected-frames-row'>
-                    <Col className='cvat-player-selected-frames-label'>
-                        <Text type='secondary'>Trace label:</Text>
-                    </Col>
-                    <Col className='cvat-player-selected-frames-label-select'>
-                        <Select
-                            value={traceLabelID}
-                            onChange={onTraceLabelChange}
-                            placeholder='Select label'
-                            options={labels
-                                .filter((label) => label.type !== LabelType.TAG)
-                                .map((label) => ({
-                                    value: label.id,
-                                    label: label.name,
-                                }))}
-                            className='cvat-player-selected-frames-label-dropdown'
-                        />
-                    </Col>
-                    <Col className='cvat-player-selected-frames-input'>
-                        <Input
-                            placeholder='Add frames (e.g., 1, 5, 20)'
-                            value={selectedFramesInput}
-                            onChange={(event) => setSelectedFramesInput(event.target.value)}
-                            onPressEnter={addSelectedFrames}
-                            allowClear
-                        />
-                    </Col>
-                    <Col>
-                        <Button type='primary' onClick={addSelectedFrames}>
-                            Add
-                        </Button>
-                    </Col>
-                    {selectedFrames.length > 0 && (
-                        <Col>
-                            <Button type='link' onClick={onClearSelectedFrames}>
-                                Clear
-                            </Button>
-                        </Col>
-                    )}
-                    <Col className='cvat-player-selected-frames-tags'>
-                        {selectedFrames.map((frame) => (
-                            <Tag
-                                key={frame}
-                                closable
-                                onClose={(event) => {
-                                    event.preventDefault();
-                                    onRemoveSelectedFrame(frame);
-                                }}
-                            >
-                                #{frame}
-                            </Tag>
-                        ))}
                     </Col>
                 </Row>
             </Col>

@@ -9,14 +9,11 @@ import { withRouter } from 'react-router';
 import { RouteComponentProps } from 'react-router-dom';
 
 import {
-    addSelectedFrames as addSelectedFramesAction,
     changeFrameAsync,
     changeWorkspace as changeWorkspaceAction,
-    clearSelectedFrames as clearSelectedFramesAction,
     setHoveredChapter as setHoveredChapterAction,
     collectStatisticsAsync,
     deleteFrameAsync,
-    removeSelectedFrame as removeSelectedFrameAction,
     redoActionAsync,
     restoreFrameAsync,
     saveAnnotationsAsync,
@@ -110,9 +107,6 @@ interface DispatchToProps {
     restoreFrame(frame: number): void;
     switchNavigationBlocked(blocked: boolean): void;
     setNavigationType(navigationType: NavigationType): void;
-    addSelectedFrames(frames: number[]): void;
-    removeSelectedFrame(frame: number): void;
-    clearSelectedFrames(): void;
 }
 
 function mapStateToProps(state: CombinedState): StateToProps {
@@ -264,15 +258,6 @@ function mapDispatchToProps(dispatch: any): DispatchToProps {
         },
         setNavigationType(navigationType: NavigationType): void {
             dispatch(setNavigationTypeAction(navigationType));
-        },
-        addSelectedFrames(frames: number[]): void {
-            dispatch(addSelectedFramesAction(frames));
-        },
-        removeSelectedFrame(frame: number): void {
-            dispatch(removeSelectedFrameAction(frame));
-        },
-        clearSelectedFrames(): void {
-            dispatch(clearSelectedFramesAction());
         },
     };
 }
