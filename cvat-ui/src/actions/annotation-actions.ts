@@ -12,7 +12,7 @@ import {
 } from 'cvat-canvas-wrapper';
 import {
     getCore, MLModel, JobType, Job, QualityConflict,
-    ObjectState, ObjectType, ShapeType, JobState, JobValidationLayout,
+    ObjectState, ObjectType, ShapeType, JobState, JobValidationLayout, LabelType,
 } from 'cvat-core-wrapper';
 import logger, { EventScope } from 'cvat-logger';
 import { getCVATStore } from 'cvat-store';
@@ -42,6 +42,101 @@ interface AnnotationsParameters {
 
 const cvat = getCore();
 let store: null | Store<CombinedState> = null;
+
+const SELECTED_FRAMES_ISSUE_PREFIX = '[cvat:selected_frames]';
+
+interface SelectedFramesStorage {
+    frames: number[];
+    traceLabelID: number | null;
+    traceShapeType: ShapeType | null;
+    traceObjectType: ObjectType | null;
+}
+
+function serializeSelectedFrames(payload: SelectedFramesStorage): string {
+    return `${SELECTED_FRAMES_ISSUE_PREFIX}${JSON.stringify(payload)}`;
+}
+
+function parseSelectedFrames(message: string): SelectedFramesStorage | null {
+    if (!message.startsWith(SELECTED_FRAMES_ISSUE_PREFIX)) {
+        return null;
+    }
+
+    const raw = message.slice(SELECTED_FRAMES_ISSUE_PREFIX.length);
+    try {
+        const parsed = JSON.parse(raw) as SelectedFramesStorage;
+        if (!Array.isArray(parsed.frames)) {
+            return null;
+        }
+        return {
+            frames: parsed.frames.filter((frame) => Number.isInteger(frame)),
+            traceLabelID: Number.isInteger(parsed.traceLabelID) ? parsed.traceLabelID : null,
+            traceShapeType: parsed.traceShapeType ?? null,
+            traceObjectType: parsed.traceObjectType ?? null,
+        };
+    } catch (error) {
+        return null;
+    }
+}
+
+function getIssueMessage(issue: any): string | null {
+    if (typeof issue.message === 'string') {
+        return issue.message;
+    }
+    if (Array.isArray(issue.comments) && issue.comments.length) {
+        const sorted = [...issue.comments].sort(
+            (a, b) => new Date(a.createdDate || 0).getTime() - new Date(b.createdDate || 0).getTime(),
+        );
+        const latest = sorted[sorted.length - 1];
+        if (latest && typeof latest.message === 'string') {
+            return latest.message;
+        }
+    }
+    return null;
+}
+
+function extractSelectedFramesFromIssues(issues: any[]): SelectedFramesStorage | null {
+    for (const issue of issues) {
+        const message = getIssueMessage(issue);
+        if (message) {
+            const parsed = parseSelectedFrames(message);
+            if (parsed) {
+                return parsed;
+            }
+        }
+    }
+    return null;
+}
+
+async function upsertSelectedFramesIssue(
+    jobInstance: Job,
+    frame: number,
+    payload: SelectedFramesStorage,
+    owner: any,
+): Promise<void> {
+    const issues = await jobInstance.issues();
+    const message = serializeSelectedFrames(payload);
+    const existing = issues.find((issue: any) => {
+        const existingMessage = getIssueMessage(issue);
+        return existingMessage?.startsWith(SELECTED_FRAMES_ISSUE_PREFIX);
+    });
+
+    if (existing) {
+        if (typeof existing.save === 'function') {
+            await existing.save({ message });
+        } else if (typeof existing.update === 'function') {
+            await existing.update({ message });
+        } else {
+            await existing.comment({ message, owner });
+        }
+    } else {
+        const issue = new cvat.classes.Issue({
+            job: jobInstance.id,
+            frame,
+            position: [0, 0],
+        });
+        await jobInstance.openIssue(issue, message);
+    }
+}
 
 function getStore(): Store<CombinedState> {
     if (store === null) {
@@ -1063,6 +1158,26 @@ export function getJobAsync({
                 },
             });
 
+            const storedSelectedFrames = extractSelectedFramesFromIssues(issues);
+            if (storedSelectedFrames) {
+                dispatch(setSelectedFrames(storedSelectedFrames.frames));
+                if (storedSelectedFrames.traceLabelID) {
+                    const traceLabel = job.labels.find((label) => label.id === storedSelectedFrames.traceLabelID);
+                    if (traceLabel) {
+                        const traceObjectType = storedSelectedFrames.traceObjectType ||
+                            (traceLabel.type === LabelType.TAG ? ObjectType.TAG : ObjectType.SHAPE);
+                        const traceShapeType = traceLabel.type === LabelType.TAG ? null :
+                            (traceLabel.type === LabelType.ANY ? storedSelectedFrames.traceShapeType :
+                                storedSelectedFrames.traceShapeType || (traceLabel.type as ShapeType));
+                        dispatch(rememberObject({
+                            activeLabelID: traceLabel.id,
+                            activeObjectType: traceObjectType,
+                            activeShapeType: traceShapeType,
+                        }, false));
+                    }
+                }
+            }
+
             dispatch(fetchAnnotationsAsync());
             dispatch(changeFrameAsync(frameNumber, false));
         } catch (error) {
@@ -1077,8 +1192,8 @@ export function getJobAsync({
 }
 
 export function saveAnnotationsAsync(): ThunkAction {
-    return async (dispatch: ThunkDispatch): Promise<void> => {
-        const { jobInstance } = receiveAnnotationsParameters();
+    return async (dispatch: ThunkDispatch, getState): Promise<void> => {
+        const { jobInstance, frame } = receiveAnnotationsParameters();
 
         dispatch({
             type: AnnotationActionTypes.SAVE_ANNOTATIONS,
@@ -1096,6 +1211,14 @@ export function saveAnnotationsAsync(): ThunkAction {
             if (jobInstance instanceof cvat.classes.Job && jobInstance.state === cvat.enums.JobState.NEW) {
                 await dispatch(updateJobAsync(jobInstance, { state: JobState.IN_PROGRESS }));
             }
+
+            const state: CombinedState = getState();
+            await upsertSelectedFramesIssue(jobInstance, frame, {
+                frames: state.annotation.player.selectedFrames,
+                traceLabelID: state.annotation.drawing.activeLabelID,
+                traceShapeType: state.annotation.drawing.activeShapeType,
+                traceObjectType: state.annotation.drawing.activeObjectType,
+            }, state.auth.user);
 
             dispatch({
                 type: AnnotationActionTypes.SAVE_ANNOTATIONS_SUCCESS,
