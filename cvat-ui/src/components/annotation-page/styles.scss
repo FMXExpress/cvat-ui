@@ -238,6 +238,18 @@
     flex-wrap: wrap;
 }
 
+.cvat-player-selected-frames-label {
+    align-self: center;
+}
+
+.cvat-player-selected-frames-label-select {
+    min-width: $grid-unit-size * 12;
+}
+
+.cvat-player-selected-frames-label-dropdown {
+    width: 100%;
+}
+
 .cvat-player-selected-frames-input {
     min-width: $grid-unit-size * 14;
 }

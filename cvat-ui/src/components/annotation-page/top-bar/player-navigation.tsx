@@ -6,6 +6,7 @@
 import React, {
     useState, useEffect, useCallback, CSSProperties,
 } from 'react';
+import { useDispatch, useSelector } from 'react-redux';
 
 import { Row, Col } from 'antd/lib/grid';
 import Icon, {
@@ -16,6 +17,7 @@ import InputNumber from 'antd/lib/input-number';
 import Input from 'antd/lib/input';
 import Tag from 'antd/lib/tag';
 import Button from 'antd/lib/button';
+import Select from 'antd/lib/select';
 import Text from 'antd/lib/typography/Text';
 import Modal from 'antd/lib/modal';
 import Tooltip from 'antd/lib/tooltip';
@@ -23,12 +25,14 @@ import Tooltip from 'antd/lib/tooltip';
 import { Workspace, CombinedState } from 'reducers';
 import { RestoreIcon } from 'icons';
 import { registerComponentShortcuts } from 'actions/shortcuts-actions';
+import { rememberObject } from 'actions/annotation-actions';
 import CVATTooltip from 'components/common/cvat-tooltip';
 import { clamp } from 'utils/math';
 import GlobalHotKeys, { KeyMap } from 'utils/mousetrap-react';
 import { ShortcutScope } from 'utils/enums';
 import { subKeyMap } from 'utils/component-subkeymap';
 import { Chapter } from 'cvat-core/src/frames';
+import { LabelType, ObjectType, ShapeType } from 'cvat-core-wrapper';
 import { usePlugins } from 'utils/hooks';
 
 interface Props {
@@ -133,6 +137,18 @@ function PlayerNavigation(props: Props): JSX.Element {
     const [frameInputValue, setFrameInputValue] = useState<number>(frameNumber);
     const [selectedFramesInput, setSelectedFramesInput] = useState<string>('');
     const [selectedFramesVisible, setSelectedFramesVisible] = useState<boolean>(false);
+    const dispatch = useDispatch();
+    const {
+        labels,
+        activeLabelID,
+        activeShapeType,
+        activeObjectType,
+    } = useSelector((state: CombinedState) => ({
+        labels: state.annotation.job.labels,
+        activeLabelID: state.annotation.drawing.activeLabelID,
+        activeShapeType: state.annotation.drawing.activeShapeType,
+        activeObjectType: state.annotation.drawing.activeObjectType,
+    }));
 
     const playerSliderPlugins = usePlugins(
         (state: CombinedState) => state.plugins.components.annotationPage.player.slider,
@@ -269,6 +285,33 @@ function PlayerNavigation(props: Props): JSX.Element {
         }
     }, [selectedFramesInput, startFrame, stopFrame, onAddSelectedFrames]);
 
+    const onTraceLabelChange = useCallback((labelID: number) => {
+        const label = labels.find((_label) => _label.id === labelID);
+        if (!label) {
+            return;
+        }
+
+        if (label.type === LabelType.TAG) {
+            dispatch(rememberObject({ activeLabelID: labelID, activeObjectType: ObjectType.TAG }, false));
+        } else if (label.type === LabelType.MASK) {
+            dispatch(rememberObject({
+                activeLabelID: labelID,
+                activeObjectType: ObjectType.SHAPE,
+                activeShapeType: ShapeType.MASK,
+            }, false));
+        } else {
+            dispatch(rememberObject({
+                activeLabelID: labelID,
+                activeObjectType: activeObjectType !== ObjectType.TAG ? activeObjectType : ObjectType.SHAPE,
+                activeShapeType: label.type === LabelType.ANY && activeShapeType !== ShapeType.SKELETON ?
+                    activeShapeType : label.type as unknown as ShapeType,
+            }, false));
+        }
+    }, [labels, activeShapeType, activeObjectType, dispatch]);
+
+    const traceLabelID = labels.some((label) => label.id === activeLabelID && label.type !== LabelType.TAG) ?
+        activeLabelID : undefined;
+
     const deleteFrameIcon = !frameDeleted ? (
         <CVATTooltip title={`Delete the frame ${deleteFrameShortcut}`}>
             <DeleteOutlined
@@ -352,6 +395,23 @@ function PlayerNavigation(props: Props): JSX.Element {
                 </Row>
                 {selectedFramesVisible && (
                     <Row align='middle' className='cvat-player-selected-frames-row'>
+                        <Col className='cvat-player-selected-frames-label'>
+                            <Text type='secondary'>Trace label:</Text>
+                        </Col>
+                        <Col className='cvat-player-selected-frames-label-select'>
+                            <Select
+                                value={traceLabelID}
+                                onChange={onTraceLabelChange}
+                                placeholder='Select label'
+                                options={labels
+                                    .filter((label) => label.type !== LabelType.TAG)
+                                    .map((label) => ({
+                                        value: label.id,
+                                        label: label.name,
+                                    }))}
+                                className='cvat-player-selected-frames-label-dropdown'
+                            />
+                        </Col>
                     <Col className='cvat-player-selected-frames-input'>
                         <Input
                             placeholder='Add frames (e.g., 1, 5, 20)'
