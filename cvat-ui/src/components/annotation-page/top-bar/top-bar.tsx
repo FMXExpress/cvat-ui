@@ -80,6 +80,9 @@ interface Props {
     switchNavigationBlocked(blocked: boolean): void;
     setNavigationType(navigationType: NavigationType): void;
     switchShowSearchPallet(visible: boolean): void;
+    addSelectedFrames(frames: number[]): void;
+    removeSelectedFrame(frame: number): void;
+    clearSelectedFrames(): void;
 }
 
 export default function AnnotationTopBarComponent(props: Props): JSX.Element {
@@ -146,6 +149,9 @@ export default function AnnotationTopBarComponent(props: Props): JSX.Element {
         switchNavigationBlocked,
         switchShowSearchPallet,
         showSearchFrameByName,
+        addSelectedFrames,
+        removeSelectedFrame,
+        clearSelectedFrames,
     } = props;
 
     const playerItems: [JSX.Element, number][] = [];
@@ -206,6 +212,9 @@ export default function AnnotationTopBarComponent(props: Props): JSX.Element {
             switchNavigationBlocked={switchNavigationBlocked}
             switchShowSearchPallet={switchShowSearchPallet}
             showSearchFrameByName={showSearchFrameByName}
+            onAddSelectedFrames={addSelectedFrames}
+            onRemoveSelectedFrame={removeSelectedFrame}
+            onClearSelectedFrames={clearSelectedFrames}
         />
     ), 10]);
 
