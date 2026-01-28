@@ -9,11 +9,14 @@ import { withRouter } from 'react-router';
 import { RouteComponentProps } from 'react-router-dom';
 
 import {
+    addSelectedFrames as addSelectedFramesAction,
     changeFrameAsync,
     changeWorkspace as changeWorkspaceAction,
+    clearSelectedFrames as clearSelectedFramesAction,
     setHoveredChapter as setHoveredChapterAction,
     collectStatisticsAsync,
     deleteFrameAsync,
+    removeSelectedFrame as removeSelectedFrameAction,
     redoActionAsync,
     restoreFrameAsync,
     saveAnnotationsAsync,
@@ -73,6 +76,7 @@ interface StateToProps {
     annotationFilters: object[];
     initialOpenGuide: boolean;
     navigationType: NavigationType;
+    selectedFrames: number[];
     showSearchFrameByName: boolean;
 }
 
@@ -106,6 +110,9 @@ interface DispatchToProps {
     restoreFrame(frame: number): void;
     switchNavigationBlocked(blocked: boolean): void;
     setNavigationType(navigationType: NavigationType): void;
+    addSelectedFrames(frames: number[]): void;
+    removeSelectedFrame(frame: number): void;
+    clearSelectedFrames(): void;
 }
 
 function mapStateToProps(state: CombinedState): StateToProps {
@@ -123,6 +130,7 @@ function mapStateToProps(state: CombinedState): StateToProps {
                 },
                 navigationType,
                 hoveredChapter,
+                selectedFrames,
             },
             annotations: {
                 saving: { uploading: saving, forceExit },
@@ -184,6 +192,7 @@ function mapStateToProps(state: CombinedState): StateToProps {
         annotationFilters,
         initialOpenGuide,
         navigationType,
+        selectedFrames,
         showSearchFrameByName,
     };
 }
@@ -255,6 +264,15 @@ function mapDispatchToProps(dispatch: any): DispatchToProps {
         },
         setNavigationType(navigationType: NavigationType): void {
             dispatch(setNavigationTypeAction(navigationType));
+        },
+        addSelectedFrames(frames: number[]): void {
+            dispatch(addSelectedFramesAction(frames));
+        },
+        removeSelectedFrame(frame: number): void {
+            dispatch(removeSelectedFrameAction(frame));
+        },
+        clearSelectedFrames(): void {
+            dispatch(clearSelectedFramesAction());
         },
     };
 }
@@ -722,6 +740,10 @@ class AnnotationTopBarContainer extends React.PureComponent<Props> {
             setNavigationType,
             switchShowSearchPallet,
             showSearchFrameByName,
+            selectedFrames,
+            addSelectedFrames,
+            removeSelectedFrame,
+            clearSelectedFrames,
         } = this.props;
 
         return (
@@ -778,6 +800,10 @@ class AnnotationTopBarContainer extends React.PureComponent<Props> {
                 navigationType={navigationType}
                 focusFrameInputShortcut={normalizedKeyMap.FOCUS_INPUT_FRAME}
                 searchFrameByNameShortcut={normalizedKeyMap.SEARCH_FRAME_BY_NAME}
+                selectedFrames={selectedFrames}
+                addSelectedFrames={addSelectedFrames}
+                removeSelectedFrame={removeSelectedFrame}
+                clearSelectedFrames={clearSelectedFrames}
                 annotationFilters={annotationFilters}
                 initialOpenGuide={initialOpenGuide}
                 onUndoClick={this.undo}
