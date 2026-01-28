@@ -136,7 +136,6 @@ function PlayerNavigation(props: Props): JSX.Element {
 
     const [frameInputValue, setFrameInputValue] = useState<number>(frameNumber);
     const [selectedFramesInput, setSelectedFramesInput] = useState<string>('');
-    const [selectedFramesVisible, setSelectedFramesVisible] = useState<boolean>(false);
     const dispatch = useDispatch();
     const {
         labels,
@@ -160,6 +159,50 @@ function PlayerNavigation(props: Props): JSX.Element {
             setFrameInputValue(frameNumber);
         }
     }, [frameNumber]);
+
+    const addSelectedFrames = useCallback(() => {
+        if (!selectedFramesInput.trim()) {
+            return;
+        }
+
+        const parsedFrames = selectedFramesInput
+            .split(/[,\s]+/)
+            .map((value) => Number.parseInt(value, 10))
+            .filter((value) => Number.isFinite(value))
+            .map((value) => Math.floor(clamp(value, startFrame, stopFrame)));
+
+        if (parsedFrames.length) {
+            onAddSelectedFrames(parsedFrames);
+            setSelectedFramesInput('');
+        }
+    }, [selectedFramesInput, startFrame, stopFrame, onAddSelectedFrames]);
+
+    const onTraceLabelChange = useCallback((labelID: number) => {
+        const label = labels.find((_label) => _label.id === labelID);
+        if (!label) {
+            return;
+        }
+
+        if (label.type === LabelType.TAG) {
+            dispatch(rememberObject({ activeLabelID: labelID, activeObjectType: ObjectType.TAG }, false));
+        } else if (label.type === LabelType.MASK) {
+            dispatch(rememberObject({
+                activeLabelID: labelID,
+                activeObjectType: ObjectType.SHAPE,
+                activeShapeType: ShapeType.MASK,
+            }, false));
+        } else {
+            dispatch(rememberObject({
+                activeLabelID: labelID,
+                activeObjectType: activeObjectType !== ObjectType.TAG ? activeObjectType : ObjectType.SHAPE,
+                activeShapeType: label.type === LabelType.ANY && activeShapeType !== ShapeType.SKELETON ?
+                    activeShapeType : label.type as unknown as ShapeType,
+            }, false));
+        }
+    }, [labels, activeShapeType, activeObjectType, dispatch]);
+
+    const traceLabelID = labels.some((label) => label.id === activeLabelID && label.type !== LabelType.TAG) ?
+        activeLabelID : undefined;
 
     const showDeleteFrameDialog = useCallback(() => {
         if (!playing) {
@@ -339,35 +382,26 @@ function PlayerNavigation(props: Props): JSX.Element {
                             <LinkOutlined className='cvat-player-frame-url-icon' onClick={onURLIconClick} />
                         </CVATTooltip>
                         { deleteFrameIcon }
-                        <Button
-                            type='link'
-                            size='small'
-                            className='cvat-player-selected-frames-toggle'
-                            onClick={() => setSelectedFramesVisible((value) => !value)}
-                        >
-                            {selectedFramesVisible ? 'Hide selected frames' : `Selected frames (${selectedFrames.length})`}
-                        </Button>
                     </Col>
                 </Row>
-                {selectedFramesVisible && (
-                    <Row align='middle' className='cvat-player-selected-frames-row'>
-                        <Col className='cvat-player-selected-frames-label'>
-                            <Text type='secondary'>Trace label:</Text>
-                        </Col>
-                        <Col className='cvat-player-selected-frames-label-select'>
-                            <Select
-                                value={traceLabelID}
-                                onChange={onTraceLabelChange}
-                                placeholder='Select label'
-                                options={labels
-                                    .filter((label) => label.type !== LabelType.TAG)
-                                    .map((label) => ({
-                                        value: label.id,
-                                        label: label.name,
-                                    }))}
-                                className='cvat-player-selected-frames-label-dropdown'
-                            />
-                        </Col>
+                <Row align='middle' className='cvat-player-selected-frames-row'>
+                    <Col className='cvat-player-selected-frames-label'>
+                        <Text type='secondary'>Trace label:</Text>
+                    </Col>
+                    <Col className='cvat-player-selected-frames-label-select'>
+                        <Select
+                            value={traceLabelID}
+                            onChange={onTraceLabelChange}
+                            placeholder='Select label'
+                            options={labels
+                                .filter((label) => label.type !== LabelType.TAG)
+                                .map((label) => ({
+                                    value: label.id,
+                                    label: label.name,
+                                }))}
+                            className='cvat-player-selected-frames-label-dropdown'
+                        />
+                    </Col>
                     <Col className='cvat-player-selected-frames-input'>
                         <Input
                             placeholder='Add frames (e.g., 1, 5, 20)'
@@ -403,8 +437,7 @@ function PlayerNavigation(props: Props): JSX.Element {
                             </Tag>
                         ))}
                     </Col>
-                    </Row>
-                )}
+                </Row>
             </Col>
             <Col>
                 <CVATTooltip title={`Press ${focusFrameInputShortcut} to focus here`}>
