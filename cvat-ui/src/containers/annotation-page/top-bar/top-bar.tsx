@@ -741,9 +741,6 @@ class AnnotationTopBarContainer extends React.PureComponent<Props> {
             switchShowSearchPallet,
             showSearchFrameByName,
             selectedFrames,
-            addSelectedFrames,
-            removeSelectedFrame,
-            clearSelectedFrames,
         } = this.props;
 
         return (
@@ -801,9 +798,6 @@ class AnnotationTopBarContainer extends React.PureComponent<Props> {
                 focusFrameInputShortcut={normalizedKeyMap.FOCUS_INPUT_FRAME}
                 searchFrameByNameShortcut={normalizedKeyMap.SEARCH_FRAME_BY_NAME}
                 selectedFrames={selectedFrames}
-                addSelectedFrames={addSelectedFrames}
-                removeSelectedFrame={removeSelectedFrame}
-                clearSelectedFrames={clearSelectedFrames}
                 annotationFilters={annotationFilters}
                 initialOpenGuide={initialOpenGuide}
                 onUndoClick={this.undo}
