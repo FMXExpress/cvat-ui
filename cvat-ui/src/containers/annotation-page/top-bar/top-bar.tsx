@@ -73,6 +73,7 @@ interface StateToProps {
     annotationFilters: object[];
     initialOpenGuide: boolean;
     navigationType: NavigationType;
+    selectedFrames: number[];
     showSearchFrameByName: boolean;
 }
 
@@ -123,6 +124,7 @@ function mapStateToProps(state: CombinedState): StateToProps {
                 },
                 navigationType,
                 hoveredChapter,
+                selectedFrames,
             },
             annotations: {
                 saving: { uploading: saving, forceExit },
@@ -184,6 +186,7 @@ function mapStateToProps(state: CombinedState): StateToProps {
         annotationFilters,
         initialOpenGuide,
         navigationType,
+        selectedFrames,
         showSearchFrameByName,
     };
 }
@@ -722,6 +725,7 @@ class AnnotationTopBarContainer extends React.PureComponent<Props> {
             setNavigationType,
             switchShowSearchPallet,
             showSearchFrameByName,
+            selectedFrames,
         } = this.props;
 
         return (
@@ -778,6 +782,7 @@ class AnnotationTopBarContainer extends React.PureComponent<Props> {
                 navigationType={navigationType}
                 focusFrameInputShortcut={normalizedKeyMap.FOCUS_INPUT_FRAME}
                 searchFrameByNameShortcut={normalizedKeyMap.SEARCH_FRAME_BY_NAME}
+                selectedFrames={selectedFrames}
                 annotationFilters={annotationFilters}
                 initialOpenGuide={initialOpenGuide}
                 onUndoClick={this.undo}

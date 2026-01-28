@@ -41,6 +41,7 @@ interface Props {
     deleteFrameShortcut: string;
     focusFrameInputShortcut: string;
     searchFrameByNameShortcut: string;
+    selectedFrames: number[];
     showSearchFrameByName: boolean;
     inputFrameRef: React.RefObject<HTMLInputElement>;
     keyMap: KeyMap;
@@ -75,6 +76,18 @@ const componentShortcuts = {
         sequences: [],
         scope: ShortcutScope.ANNOTATION_PAGE,
     },
+    NEXT_SELECTED_FRAME: {
+        name: 'Next selected frame',
+        description: 'Jump to the next selected frame',
+        sequences: ['d'],
+        scope: ShortcutScope.ANNOTATION_PAGE,
+    },
+    PREV_SELECTED_FRAME: {
+        name: 'Previous selected frame',
+        description: 'Jump to the previous selected frame',
+        sequences: ['a'],
+        scope: ShortcutScope.ANNOTATION_PAGE,
+    },
 };
 
 registerComponentShortcuts(componentShortcuts);
@@ -92,6 +105,7 @@ function PlayerNavigation(props: Props): JSX.Element {
         deleteFrameShortcut,
         focusFrameInputShortcut,
         searchFrameByNameShortcut,
+        selectedFrames,
         inputFrameRef,
         ranges,
         keyMap,
@@ -157,6 +171,25 @@ function PlayerNavigation(props: Props): JSX.Element {
                 switchShowSearchPallet(true);
             }
         },
+        NEXT_SELECTED_FRAME: (event: KeyboardEvent | undefined) => {
+            event?.preventDefault();
+            if (selectedFrames.length) {
+                const next = selectedFrames.find((value) => value > frameNumber) ?? selectedFrames[0];
+                if (typeof next !== 'undefined') {
+                    onInputChange(next);
+                }
+            }
+        },
+        PREV_SELECTED_FRAME: (event: KeyboardEvent | undefined) => {
+            event?.preventDefault();
+            if (selectedFrames.length) {
+                const previous = [...selectedFrames].reverse().find((value) => value < frameNumber)
+                    ?? selectedFrames[selectedFrames.length - 1];
+                if (typeof previous !== 'undefined') {
+                    onInputChange(previous);
+                }
+            }
+        },
     };
 
     const onSearchIconClick = useCallback(() => {
@@ -168,17 +201,45 @@ function PlayerNavigation(props: Props): JSX.Element {
         opacity: 0.5,
     } : {};
 
-    const marks: SliderMarks = (chapters ?? []).reduce<SliderMarks>((acc, chapter) => {
-        const active = hoveredChapter === chapter.id;
-        const innerAcc = acc ?? {};
-        innerAcc[chapter.start] = {
-            label:
-                    <Tooltip title={`${chapter.metadata.title}`}>
-                        <span className={`ant-slider-mark-chapter ${active ? 'active' : ''}`} />
-                    </Tooltip>,
+    const marks: SliderMarks = {};
+    const combineMarkLabel = (existing: SliderMarks[number] | undefined, nextLabel: React.ReactNode): SliderMarks[number] => {
+        if (!existing) {
+            return { label: nextLabel };
+        }
+
+        const existingLabel = (existing as any).label ?? existing;
+        return {
+            label: (
+                <span className='cvat-player-slider-mark-group'>
+                    {existingLabel}
+                    {nextLabel}
+                </span>
+            ),
         };
-        return innerAcc;
-    }, {});
+    };
+
+    (chapters ?? []).forEach((chapter) => {
+        const active = hoveredChapter === chapter.id;
+        marks[chapter.start] = combineMarkLabel(
+            marks[chapter.start],
+            (
+                <Tooltip title={`${chapter.metadata.title}`}>
+                    <span className={`ant-slider-mark-chapter ${active ? 'active' : ''}`} />
+                </Tooltip>
+            ),
+        );
+    });
+
+    selectedFrames.forEach((frame) => {
+        marks[frame] = combineMarkLabel(
+            marks[frame],
+            (
+                <Tooltip title={`Selected frame #${frame}`}>
+                    <span className='ant-slider-mark-selected-frame' />
+                </Tooltip>
+            ),
+        );
+    });
 
     const deleteFrameIcon = !frameDeleted ? (
         <CVATTooltip title={`Delete the frame ${deleteFrameShortcut}`}>

@@ -177,6 +177,23 @@
                 transform: scaleX(1.5);
                 background-color: #ff4136;
             }
+
+            > .ant-slider-mark-selected-frame {
+                display: inline-block;
+                width: 6px;
+                height: 6px;
+                margin-left: 2px;
+                border-radius: 50%;
+                background-color: #1890ff;
+                border: 1px solid #ffffff;
+                box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.1);
+            }
+
+            > .cvat-player-slider-mark-group {
+                display: inline-flex;
+                gap: 2px;
+                align-items: center;
+            }
         }
     }
 
@@ -213,6 +230,7 @@
         word-break: break-all;
     }
 }
+
 
 .cvat-player-frame-url-icon,
 .cvat-player-delete-frame,

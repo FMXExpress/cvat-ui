@@ -29,6 +29,10 @@ function updateActivatedStateID(newStates: any[], prevActivatedStateID: number |
         null;
 }
 
+function normalizeSelectedFrames(frames: number[]): number[] {
+    return Array.from(new Set(frames)).sort((a, b) => a - b);
+}
+
 export function labelShapeType(labelData?: Label | Partial<LabelType>): ShapeType | null {
     const labelType = labelData instanceof Label ? labelData.type : labelData;
     if (labelType) {
@@ -101,6 +105,7 @@ const defaultState: AnnotationState = {
             changeFrameEvent: null,
         },
         navigationType: NavigationType.REGULAR,
+        selectedFrames: [],
         ranges: '',
         playing: false,
         frameAngles: [],
@@ -268,6 +273,7 @@ export default (state = defaultState, action: AnyAction): AnnotationState => {
                         data,
                     },
                     frameAngles: Array(job.stopFrame - job.startFrame + 1).fill(0),
+                    selectedFrames: [],
                 },
                 drawing: {
                     ...state.drawing,
@@ -300,6 +306,45 @@ export default (state = defaultState, action: AnyAction): AnnotationState => {
                 player: {
                     ...state.player,
                     hoveredChapter: action.payload.id,
+                },
+            };
+        }
+        case AnnotationActionTypes.SET_SELECTED_FRAMES: {
+            const { frames } = action.payload;
+            return {
+                ...state,
+                player: {
+                    ...state.player,
+                    selectedFrames: normalizeSelectedFrames(frames),
+                },
+            };
+        }
+        case AnnotationActionTypes.ADD_SELECTED_FRAMES: {
+            const { frames } = action.payload;
+            return {
+                ...state,
+                player: {
+                    ...state.player,
+                    selectedFrames: normalizeSelectedFrames([...state.player.selectedFrames, ...frames]),
+                },
+            };
+        }
+        case AnnotationActionTypes.REMOVE_SELECTED_FRAME: {
+            const { frame } = action.payload;
+            return {
+                ...state,
+                player: {
+                    ...state.player,
+                    selectedFrames: state.player.selectedFrames.filter((value) => value !== frame),
+                },
+            };
+        }
+        case AnnotationActionTypes.CLEAR_SELECTED_FRAMES: {
+            return {
+                ...state,
+                player: {
+                    ...state.player,
+                    selectedFrames: [],
                 },
             };
         }
