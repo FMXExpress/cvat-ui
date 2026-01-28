@@ -44,6 +44,7 @@ interface Props {
     navigationType: NavigationType;
     focusFrameInputShortcut: string;
     searchFrameByNameShortcut: string;
+    selectedFrames: number[];
     activeControl: ActiveControl;
     toolsBlockerState: ToolsBlockerState;
     annotationFilters: object[];
@@ -79,6 +80,9 @@ interface Props {
     switchNavigationBlocked(blocked: boolean): void;
     setNavigationType(navigationType: NavigationType): void;
     switchShowSearchPallet(visible: boolean): void;
+    addSelectedFrames(frames: number[]): void;
+    removeSelectedFrame(frame: number): void;
+    clearSelectedFrames(): void;
 }
 
 export default function AnnotationTopBarComponent(props: Props): JSX.Element {
@@ -109,6 +113,7 @@ export default function AnnotationTopBarComponent(props: Props): JSX.Element {
         backwardShortcut,
         focusFrameInputShortcut,
         searchFrameByNameShortcut,
+        selectedFrames,
         activeControl,
         toolsBlockerState,
         annotationFilters,
@@ -144,6 +149,9 @@ export default function AnnotationTopBarComponent(props: Props): JSX.Element {
         switchNavigationBlocked,
         switchShowSearchPallet,
         showSearchFrameByName,
+        addSelectedFrames,
+        removeSelectedFrame,
+        clearSelectedFrames,
     } = props;
 
     const playerItems: [JSX.Element, number][] = [];
@@ -191,6 +199,7 @@ export default function AnnotationTopBarComponent(props: Props): JSX.Element {
             deleteFrameShortcut={deleteFrameShortcut}
             focusFrameInputShortcut={focusFrameInputShortcut}
             searchFrameByNameShortcut={searchFrameByNameShortcut}
+            selectedFrames={selectedFrames}
             inputFrameRef={inputFrameRef}
             keyMap={keyMap}
             workspace={workspace}
@@ -203,6 +212,9 @@ export default function AnnotationTopBarComponent(props: Props): JSX.Element {
             switchNavigationBlocked={switchNavigationBlocked}
             switchShowSearchPallet={switchShowSearchPallet}
             showSearchFrameByName={showSearchFrameByName}
+            onAddSelectedFrames={addSelectedFrames}
+            onRemoveSelectedFrame={removeSelectedFrame}
+            onClearSelectedFrames={clearSelectedFrames}
         />
     ), 10]);
 
