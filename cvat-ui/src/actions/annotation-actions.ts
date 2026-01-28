@@ -174,6 +174,10 @@ export enum AnnotationActionTypes {
     UPDATE_BRUSH_TOOLS_CONFIG = 'UPDATE_BRUSH_TOOLS_CONFIG',
     HIGHLIGHT_CONFLICT = 'HIGHLIGHT_CONFCLICT',
     HOVERED_CHAPTER = 'HOVERED_CHAPTER',
+    SET_SELECTED_FRAMES = 'SET_SELECTED_FRAMES',
+    ADD_SELECTED_FRAMES = 'ADD_SELECTED_FRAMES',
+    REMOVE_SELECTED_FRAME = 'REMOVE_SELECTED_FRAME',
+    CLEAR_SELECTED_FRAMES = 'CLEAR_SELECTED_FRAMES',
 }
 
 export function setHoveredChapter(id: number | null): AnyAction {
@@ -182,6 +186,40 @@ export function setHoveredChapter(id: number | null): AnyAction {
         payload: {
             id,
         },
+    };
+}
+
+export function setSelectedFrames(frames: number[]): AnyAction {
+    return {
+        type: AnnotationActionTypes.SET_SELECTED_FRAMES,
+        payload: {
+            frames,
+        },
+    };
+}
+
+export function addSelectedFrames(frames: number[]): AnyAction {
+    return {
+        type: AnnotationActionTypes.ADD_SELECTED_FRAMES,
+        payload: {
+            frames,
+        },
+    };
+}
+
+export function removeSelectedFrame(frame: number): AnyAction {
+    return {
+        type: AnnotationActionTypes.REMOVE_SELECTED_FRAME,
+        payload: {
+            frame,
+        },
+    };
+}
+
+export function clearSelectedFrames(): AnyAction {
+    return {
+        type: AnnotationActionTypes.CLEAR_SELECTED_FRAMES,
+        payload: {},
     };
 }
 

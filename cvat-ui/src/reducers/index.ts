@@ -872,6 +872,7 @@ export interface AnnotationState {
             changeFrameEvent: Event | null;
         };
         navigationType: NavigationType;
+        selectedFrames: number[];
         ranges: string;
         navigationBlocked: boolean;
         playing: boolean;
