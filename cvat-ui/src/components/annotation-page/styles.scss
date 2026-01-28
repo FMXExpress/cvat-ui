@@ -248,6 +248,12 @@
     gap: $grid-unit-size * 0.5;
 }
 
+.cvat-player-selected-frames-toggle {
+    padding: 0 $grid-unit-size * 0.5;
+    font-size: 12px;
+    height: 20px;
+}
+
 .cvat-player-frame-url-icon,
 .cvat-player-delete-frame,
 .cvat-player-restore-frame,

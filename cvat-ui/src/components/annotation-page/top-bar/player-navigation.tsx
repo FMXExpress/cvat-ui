@@ -85,13 +85,13 @@ const componentShortcuts = {
     NEXT_SELECTED_FRAME: {
         name: 'Next selected frame',
         description: 'Jump to the next selected frame',
-        sequences: ['shift+right'],
+        sequences: ['d'],
         scope: ShortcutScope.ANNOTATION_PAGE,
     },
     PREV_SELECTED_FRAME: {
         name: 'Previous selected frame',
         description: 'Jump to the previous selected frame',
-        sequences: ['shift+left'],
+        sequences: ['a'],
         scope: ShortcutScope.ANNOTATION_PAGE,
     },
 };
@@ -132,6 +132,7 @@ function PlayerNavigation(props: Props): JSX.Element {
 
     const [frameInputValue, setFrameInputValue] = useState<number>(frameNumber);
     const [selectedFramesInput, setSelectedFramesInput] = useState<string>('');
+    const [selectedFramesVisible, setSelectedFramesVisible] = useState<boolean>(false);
 
     const playerSliderPlugins = usePlugins(
         (state: CombinedState) => state.plugins.components.annotationPage.player.slider,
@@ -339,9 +340,18 @@ function PlayerNavigation(props: Props): JSX.Element {
                             <LinkOutlined className='cvat-player-frame-url-icon' onClick={onURLIconClick} />
                         </CVATTooltip>
                         { deleteFrameIcon }
+                        <Button
+                            type='link'
+                            size='small'
+                            className='cvat-player-selected-frames-toggle'
+                            onClick={() => setSelectedFramesVisible((value) => !value)}
+                        >
+                            {selectedFramesVisible ? 'Hide selected frames' : `Selected frames (${selectedFrames.length})`}
+                        </Button>
                     </Col>
                 </Row>
-                <Row align='middle' className='cvat-player-selected-frames-row'>
+                {selectedFramesVisible && (
+                    <Row align='middle' className='cvat-player-selected-frames-row'>
                     <Col className='cvat-player-selected-frames-input'>
                         <Input
                             placeholder='Add frames (e.g., 1, 5, 20)'
@@ -377,7 +387,8 @@ function PlayerNavigation(props: Props): JSX.Element {
                             </Tag>
                         ))}
                     </Col>
-                </Row>
+                    </Row>
+                )}
             </Col>
             <Col>
                 <CVATTooltip title={`Press ${focusFrameInputShortcut} to focus here`}>
