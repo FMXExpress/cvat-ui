@@ -114,6 +114,10 @@
     display: flex;
     flex-wrap: wrap;
     gap: $grid-unit-size * 0.5;
+    max-height: 50px;
+    overflow-y: auto;
+    align-content: flex-start;
+    padding-right: $grid-unit-size * 0.5;
 }
 
 .cvat-objects-sidebar-labels-list-header {
