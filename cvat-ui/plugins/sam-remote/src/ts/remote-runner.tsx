@@ -2,16 +2,23 @@
 //
 // SPDX-License-Identifier: MIT
 
-import React, { useEffect, useMemo, useState } from 'react';
+import React, {
+    useEffect,
+    useMemo,
+    useRef,
+    useState,
+} from 'react';
 import Button from 'antd/lib/button';
 import Form from 'antd/lib/form';
 import Input from 'antd/lib/input';
 import InputNumber from 'antd/lib/input-number';
 import Switch from 'antd/lib/switch';
+import Space from 'antd/lib/space';
 import message from 'antd/lib/message';
 import notification from 'antd/lib/notification';
 import { CVATCore, Job } from 'cvat-core-wrapper';
 import { getCVATStore } from 'cvat-store';
+import { pollJobStatus, submitVideoJob } from './remote-client';
 
 interface InteractorPluginTargetProps {
     jobInstance?: Job;
@@ -28,6 +35,8 @@ interface RemoteRunnerValues {
     nClusters: number;
     budget: number;
     includeFirst: boolean;
+    callbackURL?: string;
+    callbackToken?: string;
 }
 
 const DEFAULT_VALUES: RemoteRunnerValues = {
@@ -36,6 +45,8 @@ const DEFAULT_VALUES: RemoteRunnerValues = {
     nClusters: 20,
     budget: 8,
     includeFirst: true,
+    callbackURL: '',
+    callbackToken: '',
 };
 
 function validateEndpoint(_: unknown, value: string): Promise<void> {
@@ -80,6 +91,8 @@ function loadLastValues(key: string | null): RemoteRunnerValues {
             nClusters: Math.max(1, Number(parsed.nClusters) || DEFAULT_VALUES.nClusters),
             budget: Math.max(1, Number(parsed.budget) || DEFAULT_VALUES.budget),
             includeFirst: typeof parsed.includeFirst === 'boolean' ? parsed.includeFirst : DEFAULT_VALUES.includeFirst,
+            callbackURL: typeof parsed.callbackURL === 'string' ? parsed.callbackURL : '',
+            callbackToken: typeof parsed.callbackToken === 'string' ? parsed.callbackToken : '',
         };
     } catch {
         return DEFAULT_VALUES;
@@ -103,6 +116,7 @@ export default function SAMRemoteRunner(
     const { jobInstance, frame } = targetProps;
     const [form] = Form.useForm<RemoteRunnerValues>();
     const [loading, setLoading] = useState(false);
+    const abortControllerRef = useRef<AbortController | null>(null);
 
     const runnerStorageKey = useMemo(() => storageKey(jobInstance), [jobInstance?.id, jobInstance?.taskId]);
 
@@ -114,6 +128,16 @@ export default function SAMRemoteRunner(
     useEffect(() => {
         form.setFieldsValue(loadLastValues(runnerStorageKey));
     }, [form, runnerStorageKey]);
+
+    useEffect(() => (): void => {
+        abortControllerRef.current?.abort();
+    }, []);
+
+    const cancelRequest = (): void => {
+        abortControllerRef.current?.abort();
+        abortControllerRef.current = null;
+        setLoading(false);
+    };
 
     return (
         <Form
@@ -130,15 +154,19 @@ export default function SAMRemoteRunner(
                     return;
                 }
 
+                abortControllerRef.current?.abort();
+                const abortController = new AbortController();
+                abortControllerRef.current = abortController;
+
                 setLoading(true);
                 const hideMessage = message.loading('Sending video processing request...', 0);
                 try {
-                    const response = await fetch(values.endpoint, {
-                        method: 'POST',
-                        headers: {
-                            'Content-Type': 'application/json',
-                        },
-                        body: JSON.stringify({
+                    const submitResult = await submitVideoJob({
+                        endpoint: values.endpoint,
+                        signal: abortController.signal,
+                        callbackURL: values.callbackURL?.trim() || undefined,
+                        callbackToken: values.callbackToken?.trim() || undefined,
+                        params: {
                             task: jobInstance.taskId,
                             job: jobInstance.id,
                             frame,
@@ -149,21 +177,47 @@ export default function SAMRemoteRunner(
                             include_first: values.includeFirst,
                             pluginCount,
                             coreReady: Boolean(core),
-                        }),
+                            source_reference: {
+                                task: jobInstance.taskId,
+                                job: jobInstance.id,
+                            },
+                        },
                     });
 
-                    if (!response.ok) {
-                        throw new Error(`Request failed with status ${response.status}`);
+                    const result = await pollJobStatus({
+                        endpoint: values.endpoint,
+                        statusURL: submitResult.statusURL,
+                        resultURL: submitResult.resultURL,
+                        callbackToken: values.callbackToken?.trim() || undefined,
+                        signal: abortController.signal,
+                    });
+
+                    if (result.state === 'success') {
+                        saveLastValues(runnerStorageKey, values);
+                        message.success('Video processing request completed successfully');
+                    } else if (result.state === 'canceled') {
+                        notification.warning({
+                            message: 'Remote SAM request canceled',
+                            description: 'The remote job was canceled before completion.',
+                        });
+                    } else {
+                        throw new Error(result.error || 'Remote SAM job failed');
                     }
-
-                    saveLastValues(runnerStorageKey, values);
-                    message.success('Video processing request has been started');
-                } catch (error: any) {
-                    notification.error({
-                        message: 'Failed to process video',
-                        description: error?.message || 'Could not send remote SAM request',
-                    });
+                } catch (error: unknown) {
+                    const isAbort = error instanceof DOMException && error.name === 'AbortError';
+                    if (isAbort) {
+                        message.info('Video processing request canceled');
+                    } else {
+                        const description = error instanceof Error ? error.message : 'Could not process remote SAM request';
+                        notification.error({
+                            message: 'Failed to process video',
+                            description,
+                        });
+                    }
                 } finally {
+                    if (abortControllerRef.current === abortController) {
+                        abortControllerRef.current = null;
+                    }
                     hideMessage();
                     setLoading(false);
                 }
@@ -226,13 +280,33 @@ export default function SAMRemoteRunner(
                 label='include_first'
                 name='includeFirst'
                 valuePropName='checked'
-                style={{ marginBottom: 12 }}
+                style={{ marginBottom: 8 }}
             >
                 <Switch />
             </Form.Item>
-            <Button type='primary' htmlType='submit' loading={loading} disabled={loading} block>
-                Process video
-            </Button>
+            <Form.Item
+                label='callback_url (optional)'
+                name='callbackURL'
+                style={{ marginBottom: 8 }}
+            >
+                <Input placeholder='https://backend.example/sam-callback' allowClear />
+            </Form.Item>
+            <Form.Item
+                label='callback_token (optional)'
+                name='callbackToken'
+                style={{ marginBottom: 12 }}
+            >
+                <Input placeholder='token to resume webhook result retrieval' allowClear />
+            </Form.Item>
+
+            <Space.Compact block>
+                <Button type='primary' htmlType='submit' loading={loading} disabled={loading} style={{ width: '100%' }}>
+                    Process video
+                </Button>
+                <Button danger onClick={cancelRequest} disabled={!loading}>
+                    Cancel
+                </Button>
+            </Space.Compact>
         </Form>
     );
 }
