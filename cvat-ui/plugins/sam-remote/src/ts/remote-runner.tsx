@@ -18,7 +18,7 @@ import Space from 'antd/lib/space';
 import message from 'antd/lib/message';
 import notification from 'antd/lib/notification';
 import Alert from 'antd/lib/alert';
-import { Job } from 'cvat-core-wrapper';
+import { getCore, Job, Task } from 'cvat-core-wrapper';
 import { NormalizedRemoteResult, pollJobStatus, submitVideoJob } from './remote-client';
 
 interface InteractorPluginTargetProps {
@@ -152,6 +152,165 @@ function saveLastValues(key: string | null, values: RemoteRunnerValues): void {
     window.localStorage.setItem(key, JSON.stringify(values));
 }
 
+type UnknownRecord = Record<string, unknown>;
+
+const SIGNED_VIDEO_KEYS = [
+    'signedurl',
+    'signed_url',
+    'temporaryurl',
+    'temporary_url',
+    'presignedurl',
+    'presigned_url',
+];
+
+const CANONICAL_VIDEO_KEYS = [
+    'sourceurl',
+    'source_url',
+    'originalurl',
+    'original_url',
+    'remoteurl',
+    'remote_url',
+    'mediaurl',
+    'media_url',
+    'url',
+    'video',
+    'video_url',
+];
+
+function asRecord(value: unknown): UnknownRecord | null {
+    if (!value || typeof value !== 'object') {
+        return null;
+    }
+
+    return value as UnknownRecord;
+}
+
+function normalizeCandidateURL(value: unknown): string | null {
+    if (typeof value !== 'string') {
+        return null;
+    }
+
+    const trimmed = value.trim();
+    if (!trimmed) {
+        return null;
+    }
+
+    try {
+        const parsedURL = new URL(trimmed);
+        return ['http:', 'https:'].includes(parsedURL.protocol) ? parsedURL.toString() : null;
+    } catch {
+        return null;
+    }
+}
+
+function collectCandidateURLs(
+    source: unknown,
+    keys: string[],
+    maxDepth = 2,
+    currentDepth = 0,
+    visited = new Set<unknown>(),
+): string[] {
+    const record = asRecord(source);
+    if (!record || visited.has(record) || currentDepth > maxDepth) {
+        return [];
+    }
+
+    visited.add(record);
+    const normalizedKeys = new Set(keys.map((key: string): string => key.toLowerCase()));
+    const results: string[] = [];
+
+    Object.entries(record).forEach(([key, value]: [string, unknown]) => {
+        const normalizedKey = key.toLowerCase();
+        if (normalizedKeys.has(normalizedKey)) {
+            const candidate = normalizeCandidateURL(value);
+            if (candidate) {
+                results.push(candidate);
+            }
+        }
+
+        if (Array.isArray(value)) {
+            value.forEach((item: unknown) => {
+                results.push(...collectCandidateURLs(item, keys, maxDepth, currentDepth + 1, visited));
+            });
+        } else if (value && typeof value === 'object') {
+            results.push(...collectCandidateURLs(value, keys, maxDepth, currentDepth + 1, visited));
+        }
+    });
+
+    return results;
+}
+
+function pickFirstURL(source: unknown, keys: string[]): string | null {
+    const [firstURL] = collectCandidateURLs(source, keys);
+    return firstURL || null;
+}
+
+function resolveVideoReferenceFromContext(
+    targetProps?: InteractorPluginTargetProps,
+    jobInstance?: Job,
+): string | null {
+    const signedFromTargetProps = pickFirstURL(targetProps, SIGNED_VIDEO_KEYS);
+    if (signedFromTargetProps) {
+        return signedFromTargetProps;
+    }
+
+    const signedFromJob = pickFirstURL(jobInstance, SIGNED_VIDEO_KEYS);
+    if (signedFromJob) {
+        return signedFromJob;
+    }
+
+    const canonicalFromTargetProps = pickFirstURL(targetProps, CANONICAL_VIDEO_KEYS);
+    if (canonicalFromTargetProps) {
+        return canonicalFromTargetProps;
+    }
+
+    const canonicalFromJob = pickFirstURL(jobInstance, CANONICAL_VIDEO_KEYS);
+    return canonicalFromJob || null;
+}
+
+async function resolveVideoReferenceViaCoreAPI(
+    targetProps?: InteractorPluginTargetProps,
+    jobInstance?: Job,
+): Promise<string | null> {
+    const core = getCore();
+
+    const jobID = jobInstance?.id;
+    const taskID = jobInstance?.taskId;
+
+    const initialContextURL = resolveVideoReferenceFromContext(targetProps, jobInstance);
+    if (initialContextURL) {
+        return initialContextURL;
+    }
+
+    let resolvedJob: Job | null = null;
+    if (typeof jobID === 'number' && Number.isFinite(jobID)) {
+        try {
+            [resolvedJob] = await core.jobs.get({ jobID });
+            const resolvedJobURL = resolveVideoReferenceFromContext(targetProps, resolvedJob);
+            if (resolvedJobURL) {
+                return resolvedJobURL;
+            }
+        } catch {
+            // Keep manual input fallback when lookup is unavailable.
+        }
+    }
+
+    if (typeof taskID === 'number' && Number.isFinite(taskID)) {
+        try {
+            const [taskInstance] = await core.tasks.get({ id: taskID }) as Task[];
+            const resolvedTaskURL = pickFirstURL(taskInstance, SIGNED_VIDEO_KEYS) ||
+                pickFirstURL(taskInstance, CANONICAL_VIDEO_KEYS);
+            if (resolvedTaskURL) {
+                return resolvedTaskURL;
+            }
+        } catch {
+            // Keep manual input fallback when lookup is unavailable.
+        }
+    }
+
+    return null;
+}
+
 export default function SAMRemoteRunner(
     { targetProps = {}, onChangeFrame, pluginConfig = {} }: InteractorExtraProps & {
         onChangeFrame: (frame: number) => void;
@@ -161,6 +320,7 @@ export default function SAMRemoteRunner(
     const { jobInstance, frame } = targetProps;
     const [form] = Form.useForm<RemoteRunnerValues>();
     const [loading, setLoading] = useState(false);
+    const [defaultVideoReference, setDefaultVideoReference] = useState<string | null>(null);
     const [remoteResult, setRemoteResult] = useState<NormalizedRemoteResult | null>(null);
     const [selectedFrame, setSelectedFrame] = useState<number | null>(null);
     const abortControllerRef = useRef<AbortController | null>(null);
@@ -176,8 +336,30 @@ export default function SAMRemoteRunner(
             ...lastValues,
             endpoint: pluginConfig.endpoint?.trim() || lastValues.endpoint,
             callbackToken: pluginConfig.callbackToken?.trim() || lastValues.callbackToken,
+            video: lastValues.video || defaultVideoReference || '',
         });
-    }, [form, runnerStorageKey, pluginConfig.endpoint, pluginConfig.callbackToken]);
+    }, [form, runnerStorageKey, pluginConfig.endpoint, pluginConfig.callbackToken, defaultVideoReference]);
+
+    useEffect(() => {
+        let isMounted = true;
+        resolveVideoReferenceViaCoreAPI(targetProps, jobInstance)
+            .then((resolvedURL: string | null) => {
+                if (!isMounted) {
+                    return;
+                }
+                setDefaultVideoReference(resolvedURL);
+            })
+            .catch(() => {
+                if (!isMounted) {
+                    return;
+                }
+                setDefaultVideoReference(null);
+            });
+
+        return (): void => {
+            isMounted = false;
+        };
+    }, [targetProps, jobInstance?.id, jobInstance?.taskId]);
 
     useEffect(() => (): void => {
         abortControllerRef.current?.abort();
