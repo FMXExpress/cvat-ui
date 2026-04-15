@@ -57,6 +57,8 @@ CLIENT_PLUGINS="-plugins/sam" yarn run build
 
 ### Remote endpoint contract (`plugins/sam-remote`)
 
+- Works even when Models app is disabled, via annotation top-bar fallback entry.
+
 The remote plugin expects an endpoint that supports:
 
 1. **Submit** (`POST <endpoint>`):
