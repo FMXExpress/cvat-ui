@@ -17,8 +17,8 @@ import Switch from 'antd/lib/switch';
 import Space from 'antd/lib/space';
 import message from 'antd/lib/message';
 import notification from 'antd/lib/notification';
-import { CVATCore, Job } from 'cvat-core-wrapper';
-import { getCVATStore } from 'cvat-store';
+import Alert from 'antd/lib/alert';
+import { Job } from 'cvat-core-wrapper';
 import { NormalizedRemoteResult, pollJobStatus, submitVideoJob } from './remote-client';
 
 interface InteractorPluginTargetProps {
@@ -28,6 +28,13 @@ interface InteractorPluginTargetProps {
 
 interface InteractorExtraProps {
     targetProps?: InteractorPluginTargetProps;
+}
+
+interface SAMRemotePluginConfig {
+    endpoint?: string;
+    callbackToken?: string;
+    requireEndpoint?: boolean;
+    requireCallbackToken?: boolean;
 }
 
 interface RemoteRunnerValues {
@@ -49,6 +56,19 @@ const DEFAULT_VALUES: RemoteRunnerValues = {
     callbackURL: '',
     callbackToken: '',
 };
+
+function getMissingConfigFields(config: SAMRemotePluginConfig): string[] {
+    const missingFields: string[] = [];
+    if (config.requireEndpoint && !config.endpoint?.trim()) {
+        missingFields.push('endpoint');
+    }
+
+    if (config.requireCallbackToken && !config.callbackToken?.trim()) {
+        missingFields.push('token');
+    }
+
+    return missingFields;
+}
 
 function validateEndpoint(_: unknown, value: string): Promise<void> {
     if (!value?.trim()) {
@@ -109,10 +129,9 @@ function saveLastValues(key: string | null, values: RemoteRunnerValues): void {
 }
 
 export default function SAMRemoteRunner(
-    { targetProps = {}, core, store, onChangeFrame }: InteractorExtraProps & {
-        core: CVATCore;
-        store: ReturnType<typeof getCVATStore>;
+    { targetProps = {}, onChangeFrame, pluginConfig = {} }: InteractorExtraProps & {
         onChangeFrame: (frame: number) => void;
+        pluginConfig?: SAMRemotePluginConfig;
     },
 ): JSX.Element {
     const { jobInstance, frame } = targetProps;
@@ -124,14 +143,17 @@ export default function SAMRemoteRunner(
 
     const runnerStorageKey = useMemo(() => storageKey(jobInstance), [jobInstance?.id, jobInstance?.taskId]);
 
-    const pluginCount = useMemo(() => {
-        const state = store.getState() as { plugins?: { current?: Record<string, unknown> } };
-        return Object.keys(state.plugins?.current || {}).length;
-    }, [store]);
+    const missingConfigFields = useMemo(() => getMissingConfigFields(pluginConfig), [pluginConfig]);
+    const hasRequiredConfig = missingConfigFields.length === 0;
 
     useEffect(() => {
-        form.setFieldsValue(loadLastValues(runnerStorageKey));
-    }, [form, runnerStorageKey]);
+        const lastValues = loadLastValues(runnerStorageKey);
+        form.setFieldsValue({
+            ...lastValues,
+            endpoint: pluginConfig.endpoint?.trim() || lastValues.endpoint,
+            callbackToken: pluginConfig.callbackToken?.trim() || lastValues.callbackToken,
+        });
+    }, [form, runnerStorageKey, pluginConfig.endpoint, pluginConfig.callbackToken]);
 
     useEffect(() => (): void => {
         abortControllerRef.current?.abort();
@@ -161,7 +183,11 @@ export default function SAMRemoteRunner(
         }
 
         return remoteResult.selected_indices.filter(
-            (index: number): boolean => Number.isInteger(index) && index >= frameBounds.start && index <= frameBounds.stop,
+            (index: number): boolean => (
+                Number.isInteger(index) &&
+                index >= frameBounds.start &&
+                index <= frameBounds.stop
+            ),
         );
     }, [remoteResult?.selected_indices, frameBounds]);
 
@@ -231,6 +257,13 @@ export default function SAMRemoteRunner(
                     });
                     return;
                 }
+                if (!hasRequiredConfig) {
+                    notification.warning({
+                        message: 'SAM Remote plugin is not configured',
+                        description: `Missing required plugin configuration: ${missingConfigFields.join(', ')}.`,
+                    });
+                    return;
+                }
 
                 abortControllerRef.current?.abort();
                 const abortController = new AbortController();
@@ -255,8 +288,6 @@ export default function SAMRemoteRunner(
                             n_clusters: values.nClusters,
                             budget: values.budget,
                             include_first: values.includeFirst,
-                            pluginCount,
-                            coreReady: Boolean(core),
                             source_reference: {
                                 task: jobInstance.taskId,
                                 job: jobInstance.id,
@@ -289,11 +320,14 @@ export default function SAMRemoteRunner(
                         if (result.n_total_frames && frameBounds && result.n_total_frames !== frameBounds.count) {
                             notification.warning({
                                 message: 'Frame count mismatch',
-                                description: `Remote n_total_frames=${result.n_total_frames} differs from current CVAT media frame count=${frameBounds.count}.`,
+                                description: `Remote n_total_frames=${result.n_total_frames} differs from ` +
+                                    `current CVAT media frame count=${frameBounds.count}.`,
                             });
                         }
 
-                        const outOfRangeSelectedCount = (result.selected_indices || []).length - safeSelectedIndices.length;
+                        const outOfRangeSelectedCount = (
+                            result.selected_indices || []
+                        ).length - safeSelectedIndices.length;
                         const outOfRangeCandidateCount = (result.candidate_indices || []).filter(
                             (index: number): boolean => !frameBounds ||
                                 !Number.isInteger(index) ||
@@ -304,12 +338,12 @@ export default function SAMRemoteRunner(
                         if (outOfRangeSelectedCount > 0 || outOfRangeCandidateCount > 0) {
                             notification.warning({
                                 message: 'Remote indices outside current frame range',
-                                description: [
+                                description: `${[
                                     outOfRangeSelectedCount > 0 ? `${outOfRangeSelectedCount} selected indices` : '',
                                     outOfRangeCandidateCount > 0 ? `${outOfRangeCandidateCount} candidate indices` : '',
                                 ]
                                     .filter((item: string): boolean => Boolean(item))
-                                    .join(' and ') + ` are outside ${frameBounds?.start}-${frameBounds?.stop}.`,
+                                    .join(' and ')} are outside ${frameBounds?.start}-${frameBounds?.stop}.`,
                             });
                         }
 
@@ -342,6 +376,15 @@ export default function SAMRemoteRunner(
                 }
             }}
         >
+            {!hasRequiredConfig && (
+                <Alert
+                    style={{ marginBottom: 12 }}
+                    type='warning'
+                    showIcon
+                    message='SAM Remote plugin is not configured'
+                    description={`Missing required plugin configuration: ${missingConfigFields.join(', ')}.`}
+                />
+            )}
             <Form.Item
                 label='Base URL / predict URL'
                 name='endpoint'
@@ -431,9 +474,18 @@ export default function SAMRemoteRunner(
                 <div style={{ marginTop: 12 }}>
                     <div style={{ marginBottom: 8 }}>
                         <strong>Remote result summary</strong>
-                        <div>selected_indices: {remoteResult.selected_indices?.length || 0}</div>
-                        <div>candidate_indices: {remoteResult.candidate_indices?.length || 0}</div>
-                        <div>n_total_frames: {remoteResult.n_total_frames ?? 'N/A'}</div>
+                        <div>
+selected_indices:
+                            {remoteResult.selected_indices?.length || 0}
+                        </div>
+                        <div>
+candidate_indices:
+                            {remoteResult.candidate_indices?.length || 0}
+                        </div>
+                        <div>
+n_total_frames:
+                            {remoteResult.n_total_frames ?? 'N/A'}
+                        </div>
                     </div>
                     <Space.Compact block style={{ marginBottom: 8 }}>
                         <Button
@@ -459,7 +511,10 @@ export default function SAMRemoteRunner(
                             label: `Frame ${index}`,
                         }))}
                     />
-                    <div style={{ maxHeight: 160, overflowY: 'auto', border: '1px solid #f0f0f0', padding: 8 }}>
+                    <div style={{
+                        maxHeight: 160, overflowY: 'auto', border: '1px solid #f0f0f0', padding: 8,
+                    }}
+                    >
                         {filteredSelectedIndices.map((index: number) => (
                             <Button
                                 key={`selected-frame-${index}`}
