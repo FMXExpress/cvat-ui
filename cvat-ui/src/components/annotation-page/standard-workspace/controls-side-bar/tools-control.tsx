@@ -1075,18 +1075,6 @@ export class ToolsControlComponent extends React.PureComponent<Props, State> {
             activeInteractor, activeLabelID, fetching, startInteractingWithBox, convertMasksToPolygons,
         } = this.state;
 
-        if (!interactors.length) {
-            return (
-                <Row justify='center' align='middle' style={{ marginTop: '5px' }}>
-                    <Col>
-                        <Text type='warning' className='cvat-text-color'>
-                            No available interactors found
-                        </Text>
-                    </Col>
-                </Row>
-            );
-        }
-
         const minNegVertices = activeInteractor?.params?.canvas?.minNegVertices ?? -1;
         const renderStartWithBox = activeInteractor?.params?.canvas?.startWithBoxOptional ?? false;
 
@@ -1099,102 +1087,108 @@ export class ToolsControlComponent extends React.PureComponent<Props, State> {
 
         return (
             <>
-                <Row justify='start'>
-                    <Col>
-                        <Text className='cvat-text-color'>Interactor</Text>
-                    </Col>
-                </Row>
-                <Row align='middle' justify='space-between'>
-                    <Col span={22}>
-                        <Select
-                            style={{ width: '100%' }}
-                            defaultValue={interactors[0].name}
-                            onChange={this.setActiveInteractor}
-                        >
-                            {interactors.map(
-                                (interactor: MLModel): JSX.Element => (
-                                    <Select.Option
-                                        value={interactor.id}
-                                        title={interactor.description}
-                                        key={interactor.id}
-                                    >
-                                        {interactor.name}
-                                    </Select.Option>
-                                ),
-                            )}
-                        </Select>
-                    </Col>
-                    <Col span={2} className='cvat-interactors-tips-icon-container'>
-                        <Popover
-                            destroyTooltipOnHide
-                            content={(
-                                <ToolsTooltips
-                                    name={activeInteractor?.name}
-                                    withNegativePoints={minNegVertices >= 0}
-                                    {...(activeInteractor?.tip || {})}
+                {!!interactors.length && (
+                    <>
+                        <Row justify='start'>
+                            <Col>
+                                <Text className='cvat-text-color'>Interactor</Text>
+                            </Col>
+                        </Row>
+                        <Row align='middle' justify='space-between'>
+                            <Col span={22}>
+                                <Select
+                                    style={{ width: '100%' }}
+                                    defaultValue={interactors[0].name}
+                                    onChange={this.setActiveInteractor}
+                                >
+                                    {interactors.map(
+                                        (interactor: MLModel): JSX.Element => (
+                                            <Select.Option
+                                                value={interactor.id}
+                                                title={interactor.description}
+                                                key={interactor.id}
+                                            >
+                                                {interactor.name}
+                                            </Select.Option>
+                                        ),
+                                    )}
+                                </Select>
+                            </Col>
+                            <Col span={2} className='cvat-interactors-tips-icon-container'>
+                                <Popover
+                                    destroyTooltipOnHide
+                                    content={(
+                                        <ToolsTooltips
+                                            name={activeInteractor?.name}
+                                            withNegativePoints={minNegVertices >= 0}
+                                            {...(activeInteractor?.tip || {})}
+                                        />
+                                    )}
+                                >
+                                    <QuestionCircleOutlined />
+                                </Popover>
+                            </Col>
+                        </Row>
+                        <div className='cvat-tools-interactor-setups'>
+                            <div>
+                                <Switch
+                                    checked={convertMasksToPolygons}
+                                    onChange={(checked: boolean) => {
+                                        this.setState({ convertMasksToPolygons: checked });
+                                    }}
                                 />
+                                <Text>Convert masks to polygons</Text>
+                            </div>
+
+                            {renderStartWithBox && (
+                                <div>
+                                    <Switch
+                                        checked={startInteractingWithBox}
+                                        onChange={(value: boolean) => this.setState({ startInteractingWithBox: value })}
+                                    />
+                                    <Text>Start with a bounding box</Text>
+                                </div>
                             )}
-                        >
-                            <QuestionCircleOutlined />
-                        </Popover>
-                    </Col>
-                </Row>
-                <div className='cvat-tools-interactor-setups'>
-                    <div>
-                        <Switch
-                            checked={convertMasksToPolygons}
-                            onChange={(checked: boolean) => {
-                                this.setState({ convertMasksToPolygons: checked });
-                            }}
-                        />
-                        <Text>Convert masks to polygons</Text>
-                    </div>
-
-                    {renderStartWithBox && (
-                        <div>
-                            <Switch
-                                checked={startInteractingWithBox}
-                                onChange={(value: boolean) => this.setState({ startInteractingWithBox: value })}
-                            />
-                            <Text>Start with a bounding box</Text>
                         </div>
-                    )}
-                </div>
-                <div className='cvat-tools-interactor-extras'>
-                    {renderedInteractorExtras}
-                </div>
-                <Row align='middle' justify='end'>
-                    <Col>
-                        <Button
-                            type='primary'
-                            loading={fetching}
-                            className='cvat-tools-interact-button'
-                            disabled={!activeInteractor ||
-                                fetching ||
-                                activeInteractor.version < MIN_SUPPORTED_INTERACTOR_VERSION}
-                            onClick={() => {
-                                if (activeInteractor && activeLabelID && labels.length) {
-                                    this.setState({ mode: 'interaction' });
-                                    canvasInstance.cancel();
-                                    const interactorParameters = {
-                                        ...omit(activeInteractor.params.canvas, 'startWithBoxOptional'),
-                                        // replace 'optional' with true or false depending on user specified setting
-                                        ...(activeInteractor.params.canvas.startWithBoxOptional ? {
-                                            startWithBox: startInteractingWithBox,
-                                        } : {
-                                            startWithBox: activeInteractor.params.canvas.startWithBox,
-                                        }),
-                                    };
+                        <Row align='middle' justify='end'>
+                            <Col>
+                                <Button
+                                    type='primary'
+                                    loading={fetching}
+                                    className='cvat-tools-interact-button'
+                                    disabled={!activeInteractor ||
+                                        fetching ||
+                                        activeInteractor.version < MIN_SUPPORTED_INTERACTOR_VERSION}
+                                    onClick={() => {
+                                        if (activeInteractor && activeLabelID && labels.length) {
+                                            this.setState({ mode: 'interaction' });
+                                            canvasInstance.cancel();
+                                            const interactorParameters = {
+                                                ...omit(activeInteractor.params.canvas, 'startWithBoxOptional'),
+                                                // replace 'optional' with true or false depending on user specified setting
+                                                ...(activeInteractor.params.canvas.startWithBoxOptional ? {
+                                                    startWithBox: startInteractingWithBox,
+                                                } : {
+                                                    startWithBox: activeInteractor.params.canvas.startWithBox,
+                                                }),
+                                            };
 
-                                    canvasInstance.interact({ shapeType: 'points', enabled: true, ...interactorParameters });
-                                    onInteractionStart(activeInteractor, activeLabelID, interactorParameters);
-                                }
-                            }}
-                        >
-                            Interact
-                        </Button>
-                    </Col>
-                </Row>
+                                            canvasInstance.interact({ shapeType: 'points', enabled: true, ...interactorParameters });
+                                            onInteractionStart(activeInteractor, activeLabelID, interactorParameters);
+                                        }
+                                    }}
+                                >
+                                    Interact
+                                </Button>
+                            </Col>
+                        </Row>
+                    </>
+                )}
+                {!!renderedInteractorExtras.length && (
+                    <div className='cvat-tools-interactor-extras'>
+                        {renderedInteractorExtras}
+                    </div>
+                )}
             </>
         );
     }
@@ -1344,13 +1338,13 @@ export class ToolsControlComponent extends React.PureComponent<Props, State> {
 
     public render(): JSX.Element | null {
         const {
-            interactors, detectors, trackers, isActivated, canvasInstance, labels, frameIsDeleted,
+            interactors, detectors, trackers, interactorExtras, isActivated, canvasInstance, labels, frameIsDeleted,
         } = this.props;
         const {
             fetching, approxPolyAccuracy, pointsReceived, mode, portals, convertMasksToPolygons,
         } = this.state;
 
-        if (![...interactors, ...detectors, ...trackers].length) return null;
+        if (![...interactors, ...detectors, ...trackers].length && !interactorExtras.length) return null;
 
         const dynamicPopoverProps = isActivated ?
             {
