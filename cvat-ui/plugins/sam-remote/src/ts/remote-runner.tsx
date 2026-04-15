@@ -43,6 +43,7 @@ interface RemoteRunnerValues {
     nClusters: number;
     budget: number;
     includeFirst: boolean;
+    video: string;
     callbackURL?: string;
     callbackToken?: string;
 }
@@ -53,6 +54,7 @@ const DEFAULT_VALUES: RemoteRunnerValues = {
     nClusters: 20,
     budget: 8,
     includeFirst: true,
+    video: '',
     callbackURL: '',
     callbackToken: '',
 };
@@ -86,6 +88,27 @@ function validateEndpoint(_: unknown, value: string): Promise<void> {
     }
 }
 
+function validateVideoReference(_: unknown, value: string): Promise<void> {
+    const trimmedValue = value?.trim();
+    if (!trimmedValue) {
+        return Promise.reject(new Error('Video URL or data URI is required'));
+    }
+
+    if (trimmedValue.startsWith('data:')) {
+        return Promise.resolve();
+    }
+
+    try {
+        const parsedUrl = new URL(trimmedValue);
+        if (!['http:', 'https:'].includes(parsedUrl.protocol)) {
+            throw new Error('Only HTTP(S) URLs are supported');
+        }
+        return Promise.resolve();
+    } catch {
+        return Promise.reject(new Error('Enter a valid HTTP(S) URL or data URI'));
+    }
+}
+
 function storageKey(jobInstance?: Job): string | null {
     if (!jobInstance) {
         return null;
@@ -112,6 +135,7 @@ function loadLastValues(key: string | null): RemoteRunnerValues {
             nClusters: Math.max(1, Number(parsed.nClusters) || DEFAULT_VALUES.nClusters),
             budget: Math.max(1, Number(parsed.budget) || DEFAULT_VALUES.budget),
             includeFirst: typeof parsed.includeFirst === 'boolean' ? parsed.includeFirst : DEFAULT_VALUES.includeFirst,
+            video: typeof parsed.video === 'string' ? parsed.video : DEFAULT_VALUES.video,
             callbackURL: typeof parsed.callbackURL === 'string' ? parsed.callbackURL : '',
             callbackToken: typeof parsed.callbackToken === 'string' ? parsed.callbackToken : '',
         };
@@ -264,6 +288,14 @@ export default function SAMRemoteRunner(
                     });
                     return;
                 }
+                const videoReference = values.video?.trim();
+                if (!videoReference) {
+                    notification.warning({
+                        message: 'Cannot process video',
+                        description: 'Provide a video URL or data URI before submitting.',
+                    });
+                    return;
+                }
 
                 abortControllerRef.current?.abort();
                 const abortController = new AbortController();
@@ -284,6 +316,7 @@ export default function SAMRemoteRunner(
                             job: jobInstance.id,
                             frame,
                             mode: jobInstance.mode,
+                            video: videoReference,
                             stride: values.stride,
                             n_clusters: values.nClusters,
                             budget: values.budget,
@@ -452,6 +485,17 @@ export default function SAMRemoteRunner(
                 style={{ marginBottom: 8 }}
             >
                 <Input placeholder='https://backend.example/sam-callback' allowClear />
+            </Form.Item>
+            <Form.Item
+                label='video URL or data URI'
+                name='video'
+                style={{ marginBottom: 8 }}
+                rules={[{ validator: validateVideoReference }]}
+            >
+                <Input.TextArea
+                    autoSize={{ minRows: 2, maxRows: 6 }}
+                    placeholder='https://storage.example/video.mp4 or data:video/mp4;base64,...'
+                />
             </Form.Item>
             <Form.Item
                 label='callback_token (optional)'
