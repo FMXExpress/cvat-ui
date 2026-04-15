@@ -59,6 +59,11 @@ const defaultState: PluginsState = {
             menuActions: {
                 items: [],
             },
+            topBar: {
+                actions: {
+                    items: [],
+                },
+            },
         },
         modelsPage: {
             topBar: {

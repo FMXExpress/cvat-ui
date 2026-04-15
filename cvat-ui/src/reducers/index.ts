@@ -399,6 +399,11 @@ export interface PluginsState {
             menuActions: {
                 items: PluginComponent[];
             };
+            topBar: {
+                actions: {
+                    items: PluginComponent[];
+                };
+            };
         }
         modelsPage: {
             topBar: {
