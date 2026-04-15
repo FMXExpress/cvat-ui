@@ -19,9 +19,10 @@ function shouldRenderOnVideoAnnotationPage(targetProps: object = {}): boolean {
 function makeSAMRemoteExtra(
     core: CVATCore,
     store: ReturnType<typeof getCVATStore>,
+    onChangeFrame: (frame: number) => void,
 ): React.FC<InteractorExtraProps> {
     return function SAMRemoteExtra({ targetProps = {} }: InteractorExtraProps): JSX.Element {
-        return <SAMRemoteRunner targetProps={targetProps} core={core} store={store} />;
+        return <SAMRemoteRunner targetProps={targetProps} core={core} store={store} onChangeFrame={onChangeFrame} />;
     };
 }
 
@@ -31,9 +32,15 @@ const builder: ComponentBuilder = ({
     store,
     core,
 }) => {
-    const remoteSAMExtra = makeSAMRemoteExtra(core, store);
+    const remoteSAMExtra = makeSAMRemoteExtra(
+        core,
+        store,
+        (frame: number): void => {
+            dispatch(actionCreators.changeFrameAsync(frame));
+        },
+    );
 
-    dispatch(actionCreators.addUIComponent(AI_TOOLS_INTERACTOR_EXTRAS_PATH, remoteSAMExtra, {
+    dispatch(actionCreators.addUIComponent(AI_TOOLS_INTERACTOR_EXTRAS_PATH, remoteSAMExtra as any, {
         shouldBeRendered: shouldRenderOnVideoAnnotationPage,
         weight: 120,
     }));
@@ -41,7 +48,7 @@ const builder: ComponentBuilder = ({
     return {
         name: SAM_REMOTE_PLUGIN_NAME,
         destructor: () => {
-            dispatch(actionCreators.removeUIComponent(AI_TOOLS_INTERACTOR_EXTRAS_PATH, remoteSAMExtra));
+            dispatch(actionCreators.removeUIComponent(AI_TOOLS_INTERACTOR_EXTRAS_PATH, remoteSAMExtra as any));
         },
     };
 };
