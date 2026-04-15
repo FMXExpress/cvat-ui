@@ -9,14 +9,16 @@ import Icon, { StopOutlined, CheckCircleOutlined, LoadingOutlined } from '@ant-d
 import Modal from 'antd/lib/modal';
 import Button from 'antd/lib/button';
 import Text from 'antd/lib/typography/Text';
+import { useSelector } from 'react-redux';
 
 import { UndoIcon, RedoIcon } from 'icons';
-import { ActiveControl, ToolsBlockerState } from 'reducers';
+import { ActiveControl, CombinedState, ToolsBlockerState } from 'reducers';
 import { registerComponentShortcuts } from 'actions/shortcuts-actions';
 import AnnotationMenuComponent from 'components/annotation-page/top-bar/annotation-menu';
 import CVATTooltip from 'components/common/cvat-tooltip';
 import { ShortcutScope } from 'utils/enums';
 import { subKeyMap } from 'utils/component-subkeymap';
+import { usePlugins } from 'utils/hooks';
 import GlobalHotKeys, { KeyMap } from 'utils/mousetrap-react';
 import { finishDrawAvailable } from 'utils/drawing';
 import SaveAnnotationsButton from './save-annotations-button';
@@ -80,6 +82,12 @@ function LeftGroup(props: Props): JSX.Element {
     } = props;
 
     const includesDoneButton = finishDrawAvailable(activeControl);
+    const jobInstance = useSelector((state: CombinedState) => state.annotation.job.instance);
+    const frame = useSelector((state: CombinedState) => state.annotation.player.frame.number);
+    const topBarActionPlugins = usePlugins(
+        (state: CombinedState) => state.plugins.components.annotationPage.topBar.actions.items,
+        { ...props, jobInstance, frame },
+    );
 
     const includesToolsBlockerButton =
         [ActiveControl.OPENCV_TOOLS, ActiveControl.AI_TOOLS].includes(activeControl) && toolsBlockerState.buttonVisible;
@@ -121,6 +129,15 @@ function LeftGroup(props: Props): JSX.Element {
             <Col className='cvat-annotation-header-left-group'>
                 <AnnotationMenuComponent />
                 <SaveAnnotationsButton />
+                {topBarActionPlugins.map(({ component, weight }, index) => {
+                    const PluginAction = component as React.ComponentType<{ targetProps: object }>;
+                    return (
+                        <PluginAction
+                            key={`${weight}-${index}`}
+                            targetProps={{ ...props, jobInstance, frame }}
+                        />
+                    );
+                })}
                 <CVATTooltip overlay={`Undo: ${undoAction} ${undoShortcut}`}>
                     <Button
                         style={{ pointerEvents: undoAction ? 'initial' : 'none', opacity: undoAction ? 1 : 0.5 }}
