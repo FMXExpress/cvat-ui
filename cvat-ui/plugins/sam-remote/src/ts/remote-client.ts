@@ -232,26 +232,30 @@ async function fetchResult(url: string, signal?: AbortSignal): Promise<Normalize
 }
 
 export async function submitVideoJob(options: SubmitVideoJobOptions): Promise<SubmitVideoJobResponse> {
-    const payload = new FormData();
-    if (options.videoSource?.file) {
-        payload.append('video_file', options.videoSource.file);
-    } else if (options.videoSource?.signedURL) {
-        payload.append('video_url', options.videoSource.signedURL);
+    const payload: Record<string, unknown> = {
+        ...options.params,
+    };
+    if (options.videoSource?.file || options.videoSource?.signedURL) {
+        payload.video = {
+            ...(options.videoSource.file ? { file: options.videoSource.file } : {}),
+            ...(options.videoSource.signedURL ? { url: options.videoSource.signedURL } : {}),
+        };
     }
 
-    payload.append('params', JSON.stringify(options.params));
-
     if (options.callbackURL) {
-        payload.append('callback_url', options.callbackURL);
+        payload.callback_url = options.callbackURL;
     }
 
     if (options.callbackToken) {
-        payload.append('callback_token', options.callbackToken);
+        payload.callback_token = options.callbackToken;
     }
 
     const response = await fetch(options.endpoint, {
         method: 'POST',
-        body: payload,
+        headers: {
+            'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ input: payload }),
         signal: options.signal,
     });
 
