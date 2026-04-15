@@ -340,6 +340,8 @@ export default function SAMRemoteRunner(
 
         let videoValue = currentVideo;
         if (!isVideoDirty) {
+            // Keep the auto-prefill in the form state (`values.video`) so submit can
+            // always read from `values.video?.trim()` without branching.
             videoValue = storedVideo || resolvedCurrentVideoURL || '';
 
             // If auto-resolved video differs from locally stored data, keep the
@@ -520,6 +522,7 @@ export default function SAMRemoteRunner(
                             job: jobInstance.id,
                             frame,
                             mode: jobInstance.mode,
+                            // May be auto-derived from current CVAT job/task media or manually overridden in the form.
                             video: videoReference,
                             stride: values.stride,
                             n_clusters: values.nClusters,
