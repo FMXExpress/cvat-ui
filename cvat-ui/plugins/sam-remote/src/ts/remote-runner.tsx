@@ -332,11 +332,33 @@ export default function SAMRemoteRunner(
 
     useEffect(() => {
         const lastValues = loadLastValues(runnerStorageKey);
+        const isVideoDirty = form.isFieldTouched('video');
+        const currentVideoValue = form.getFieldValue('video');
+        const currentVideo = typeof currentVideoValue === 'string' ? currentVideoValue.trim() : '';
+        const storedVideo = lastValues.video?.trim() || '';
+        const resolvedCurrentVideoURL = defaultVideoReference?.trim() || '';
+
+        let videoValue = currentVideo;
+        if (!isVideoDirty) {
+            videoValue = storedVideo || resolvedCurrentVideoURL || '';
+
+            // If auto-resolved video differs from locally stored data, keep the
+            // stored/manual override unless the field is still pristine and empty.
+            if (
+                resolvedCurrentVideoURL &&
+                storedVideo &&
+                resolvedCurrentVideoURL !== storedVideo &&
+                currentVideo
+            ) {
+                videoValue = currentVideo;
+            }
+        }
+
         form.setFieldsValue({
             ...lastValues,
             endpoint: pluginConfig.endpoint?.trim() || lastValues.endpoint,
             callbackToken: pluginConfig.callbackToken?.trim() || lastValues.callbackToken,
-            video: lastValues.video || defaultVideoReference || '',
+            video: videoValue,
         });
     }, [form, runnerStorageKey, pluginConfig.endpoint, pluginConfig.callbackToken, defaultVideoReference]);
 
@@ -519,7 +541,10 @@ export default function SAMRemoteRunner(
                     });
 
                     if (result.state === 'success') {
-                        saveLastValues(runnerStorageKey, values);
+                        saveLastValues(runnerStorageKey, {
+                            ...values,
+                            video: videoReference,
+                        });
                         setRemoteResult(result);
                         const safeSelectedIndices = (result.selected_indices || []).filter((index: number): boolean => {
                             if (!frameBounds) {
