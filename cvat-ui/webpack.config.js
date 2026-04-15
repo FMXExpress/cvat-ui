@@ -12,11 +12,21 @@ const CopyPlugin = require('copy-webpack-plugin');
 module.exports = (env) => {
     const defaultAppConfig = path.join(__dirname, 'src/config.tsx');
     const defaultPlugins = ['plugins/sam', 'plugins/sam-remote'];
+    const customPlugins = process.env.CLIENT_PLUGINS ?
+        process.env.CLIENT_PLUGINS.split(':').map((s) => s.trim()).filter((s) => !!s) :
+        [];
+    const disabledPlugins = new Set(customPlugins
+        .filter((pluginPath) => pluginPath.startsWith('-'))
+        .map((pluginPath) => pluginPath.slice(1)));
+    const enabledPlugins = customPlugins
+        .filter((pluginPath) => !pluginPath.startsWith('-'))
+        .map((pluginPath) => pluginPath.replace(/^\+/, ''));
 
     const sourceMapsDisabled = (process.env.DISABLE_SOURCE_MAPS || 'false').toLocaleLowerCase() === 'true';
     const appConfigFile = process.env.UI_APP_CONFIG ? process.env.UI_APP_CONFIG : defaultAppConfig;
-    const pluginsList = process.env.CLIENT_PLUGINS ? [...defaultPlugins, ...process.env.CLIENT_PLUGINS.split(':')]
-        .map((s) => s.trim()).filter((s) => !!s) : defaultPlugins;
+    const pluginsList = [...new Set(
+        [...defaultPlugins.filter((pluginPath) => !disabledPlugins.has(pluginPath)), ...enabledPlugins],
+    )];
     const sourceMapsToken = process.env.SOURCE_MAPS_TOKEN || '';
 
     const transformedPlugins = pluginsList
@@ -204,7 +214,7 @@ module.exports = (env) => {
                         to  : 'assets/[name][ext]',
                     },
                     {
-                        from: 'plugins/**/assets/*.(onnx|js)',
+                        from: 'plugins/**/assets/*.{onnx,js,json,wasm}',
                         to  : 'assets/[name][ext]',
                     }
                 ],
