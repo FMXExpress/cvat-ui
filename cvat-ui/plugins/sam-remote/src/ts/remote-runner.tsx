@@ -15,11 +15,17 @@ import InputNumber from 'antd/lib/input-number';
 import Select from 'antd/lib/select';
 import Switch from 'antd/lib/switch';
 import Space from 'antd/lib/space';
+import Collapse from 'antd/lib/collapse';
 import message from 'antd/lib/message';
 import notification from 'antd/lib/notification';
 import Alert from 'antd/lib/alert';
-import { getCore, Job, Task } from 'cvat-core-wrapper';
-import { NormalizedRemoteResult, pollJobStatus, submitVideoJob } from './remote-client';
+import { Job } from 'cvat-core-wrapper';
+import {
+    mintVideoAccess,
+    NormalizedRemoteResult,
+    pollJobStatus,
+    submitVideoJob,
+} from './remote-client';
 
 interface InteractorPluginTargetProps {
     jobInstance?: Job;
@@ -43,7 +49,7 @@ interface RemoteRunnerValues {
     nClusters: number;
     budget: number;
     includeFirst: boolean;
-    video: string;
+    debugVideoURL?: string;
     callbackURL?: string;
     callbackToken?: string;
 }
@@ -54,7 +60,7 @@ const DEFAULT_VALUES: RemoteRunnerValues = {
     nClusters: 20,
     budget: 8,
     includeFirst: true,
-    video: '',
+    debugVideoURL: '',
     callbackURL: '',
     callbackToken: '',
 };
@@ -91,7 +97,7 @@ function validateEndpoint(_: unknown, value: string): Promise<void> {
 function validateVideoReference(_: unknown, value: string): Promise<void> {
     const trimmedValue = value?.trim();
     if (!trimmedValue) {
-        return Promise.reject(new Error('Video URL or data URI is required'));
+        return Promise.resolve();
     }
 
     if (trimmedValue.startsWith('data:')) {
@@ -135,7 +141,7 @@ function loadLastValues(key: string | null): RemoteRunnerValues {
             nClusters: Math.max(1, Number(parsed.nClusters) || DEFAULT_VALUES.nClusters),
             budget: Math.max(1, Number(parsed.budget) || DEFAULT_VALUES.budget),
             includeFirst: typeof parsed.includeFirst === 'boolean' ? parsed.includeFirst : DEFAULT_VALUES.includeFirst,
-            video: typeof parsed.video === 'string' ? parsed.video : DEFAULT_VALUES.video,
+            debugVideoURL: typeof parsed.debugVideoURL === 'string' ? parsed.debugVideoURL : DEFAULT_VALUES.debugVideoURL,
             callbackURL: typeof parsed.callbackURL === 'string' ? parsed.callbackURL : '',
             callbackToken: typeof parsed.callbackToken === 'string' ? parsed.callbackToken : '',
         };
@@ -152,165 +158,6 @@ function saveLastValues(key: string | null, values: RemoteRunnerValues): void {
     window.localStorage.setItem(key, JSON.stringify(values));
 }
 
-type UnknownRecord = Record<string, unknown>;
-
-const SIGNED_VIDEO_KEYS = [
-    'signedurl',
-    'signed_url',
-    'temporaryurl',
-    'temporary_url',
-    'presignedurl',
-    'presigned_url',
-];
-
-const CANONICAL_VIDEO_KEYS = [
-    'sourceurl',
-    'source_url',
-    'originalurl',
-    'original_url',
-    'remoteurl',
-    'remote_url',
-    'mediaurl',
-    'media_url',
-    'url',
-    'video',
-    'video_url',
-];
-
-function asRecord(value: unknown): UnknownRecord | null {
-    if (!value || typeof value !== 'object') {
-        return null;
-    }
-
-    return value as UnknownRecord;
-}
-
-function normalizeCandidateURL(value: unknown): string | null {
-    if (typeof value !== 'string') {
-        return null;
-    }
-
-    const trimmed = value.trim();
-    if (!trimmed) {
-        return null;
-    }
-
-    try {
-        const parsedURL = new URL(trimmed);
-        return ['http:', 'https:'].includes(parsedURL.protocol) ? parsedURL.toString() : null;
-    } catch {
-        return null;
-    }
-}
-
-function collectCandidateURLs(
-    source: unknown,
-    keys: string[],
-    maxDepth = 2,
-    currentDepth = 0,
-    visited = new Set<unknown>(),
-): string[] {
-    const record = asRecord(source);
-    if (!record || visited.has(record) || currentDepth > maxDepth) {
-        return [];
-    }
-
-    visited.add(record);
-    const normalizedKeys = new Set(keys.map((key: string): string => key.toLowerCase()));
-    const results: string[] = [];
-
-    Object.entries(record).forEach(([key, value]: [string, unknown]) => {
-        const normalizedKey = key.toLowerCase();
-        if (normalizedKeys.has(normalizedKey)) {
-            const candidate = normalizeCandidateURL(value);
-            if (candidate) {
-                results.push(candidate);
-            }
-        }
-
-        if (Array.isArray(value)) {
-            value.forEach((item: unknown) => {
-                results.push(...collectCandidateURLs(item, keys, maxDepth, currentDepth + 1, visited));
-            });
-        } else if (value && typeof value === 'object') {
-            results.push(...collectCandidateURLs(value, keys, maxDepth, currentDepth + 1, visited));
-        }
-    });
-
-    return results;
-}
-
-function pickFirstURL(source: unknown, keys: string[]): string | null {
-    const [firstURL] = collectCandidateURLs(source, keys);
-    return firstURL || null;
-}
-
-function resolveVideoReferenceFromContext(
-    targetProps?: InteractorPluginTargetProps,
-    jobInstance?: Job,
-): string | null {
-    const signedFromTargetProps = pickFirstURL(targetProps, SIGNED_VIDEO_KEYS);
-    if (signedFromTargetProps) {
-        return signedFromTargetProps;
-    }
-
-    const signedFromJob = pickFirstURL(jobInstance, SIGNED_VIDEO_KEYS);
-    if (signedFromJob) {
-        return signedFromJob;
-    }
-
-    const canonicalFromTargetProps = pickFirstURL(targetProps, CANONICAL_VIDEO_KEYS);
-    if (canonicalFromTargetProps) {
-        return canonicalFromTargetProps;
-    }
-
-    const canonicalFromJob = pickFirstURL(jobInstance, CANONICAL_VIDEO_KEYS);
-    return canonicalFromJob || null;
-}
-
-async function resolveVideoReferenceViaCoreAPI(
-    targetProps?: InteractorPluginTargetProps,
-    jobInstance?: Job,
-): Promise<string | null> {
-    const core = getCore();
-
-    const jobID = jobInstance?.id;
-    const taskID = jobInstance?.taskId;
-
-    const initialContextURL = resolveVideoReferenceFromContext(targetProps, jobInstance);
-    if (initialContextURL) {
-        return initialContextURL;
-    }
-
-    let resolvedJob: Job | null = null;
-    if (typeof jobID === 'number' && Number.isFinite(jobID)) {
-        try {
-            [resolvedJob] = await core.jobs.get({ jobID });
-            const resolvedJobURL = resolveVideoReferenceFromContext(targetProps, resolvedJob);
-            if (resolvedJobURL) {
-                return resolvedJobURL;
-            }
-        } catch {
-            // Keep manual input fallback when lookup is unavailable.
-        }
-    }
-
-    if (typeof taskID === 'number' && Number.isFinite(taskID)) {
-        try {
-            const [taskInstance] = await core.tasks.get({ id: taskID }) as Task[];
-            const resolvedTaskURL = pickFirstURL(taskInstance, SIGNED_VIDEO_KEYS) ||
-                pickFirstURL(taskInstance, CANONICAL_VIDEO_KEYS);
-            if (resolvedTaskURL) {
-                return resolvedTaskURL;
-            }
-        } catch {
-            // Keep manual input fallback when lookup is unavailable.
-        }
-    }
-
-    return null;
-}
-
 export default function SAMRemoteRunner(
     { targetProps = {}, onChangeFrame, pluginConfig = {} }: InteractorExtraProps & {
         onChangeFrame: (frame: number) => void;
@@ -320,7 +167,7 @@ export default function SAMRemoteRunner(
     const { jobInstance, frame } = targetProps;
     const [form] = Form.useForm<RemoteRunnerValues>();
     const [loading, setLoading] = useState(false);
-    const [defaultVideoReference, setDefaultVideoReference] = useState<string | null>(null);
+    const [validationBounds, setValidationBounds] = useState<{ start: number; stop: number } | null>(null);
     const [remoteResult, setRemoteResult] = useState<NormalizedRemoteResult | null>(null);
     const [selectedFrame, setSelectedFrame] = useState<number | null>(null);
     const abortControllerRef = useRef<AbortController | null>(null);
@@ -332,58 +179,13 @@ export default function SAMRemoteRunner(
 
     useEffect(() => {
         const lastValues = loadLastValues(runnerStorageKey);
-        const isVideoDirty = form.isFieldTouched('video');
-        const currentVideoValue = form.getFieldValue('video');
-        const currentVideo = typeof currentVideoValue === 'string' ? currentVideoValue.trim() : '';
-        const storedVideo = lastValues.video?.trim() || '';
-        const resolvedCurrentVideoURL = defaultVideoReference?.trim() || '';
-
-        let videoValue = currentVideo;
-        if (!isVideoDirty) {
-            // Keep the auto-prefill in the form state (`values.video`) so submit can
-            // always read from `values.video?.trim()` without branching.
-            videoValue = storedVideo || resolvedCurrentVideoURL || '';
-
-            // If auto-resolved video differs from locally stored data, keep the
-            // stored/manual override unless the field is still pristine and empty.
-            if (
-                resolvedCurrentVideoURL &&
-                storedVideo &&
-                resolvedCurrentVideoURL !== storedVideo &&
-                currentVideo
-            ) {
-                videoValue = currentVideo;
-            }
-        }
 
         form.setFieldsValue({
             ...lastValues,
             endpoint: pluginConfig.endpoint?.trim() || lastValues.endpoint,
             callbackToken: pluginConfig.callbackToken?.trim() || lastValues.callbackToken,
-            video: videoValue,
         });
-    }, [form, runnerStorageKey, pluginConfig.endpoint, pluginConfig.callbackToken, defaultVideoReference]);
-
-    useEffect(() => {
-        let isMounted = true;
-        resolveVideoReferenceViaCoreAPI(targetProps, jobInstance)
-            .then((resolvedURL: string | null) => {
-                if (!isMounted) {
-                    return;
-                }
-                setDefaultVideoReference(resolvedURL);
-            })
-            .catch(() => {
-                if (!isMounted) {
-                    return;
-                }
-                setDefaultVideoReference(null);
-            });
-
-        return (): void => {
-            isMounted = false;
-        };
-    }, [targetProps, jobInstance?.id, jobInstance?.taskId]);
+    }, [form, runnerStorageKey, pluginConfig.endpoint, pluginConfig.callbackToken]);
 
     useEffect(() => (): void => {
         abortControllerRef.current?.abort();
@@ -395,7 +197,7 @@ export default function SAMRemoteRunner(
         setLoading(false);
     };
 
-    const frameBounds = useMemo(() => {
+    const fallbackJobBounds = useMemo(() => {
         if (!jobInstance) {
             return null;
         }
@@ -403,9 +205,20 @@ export default function SAMRemoteRunner(
         return {
             start: jobInstance.startFrame,
             stop: jobInstance.stopFrame,
-            count: jobInstance.stopFrame - jobInstance.startFrame + 1,
         };
     }, [jobInstance?.id, jobInstance?.startFrame, jobInstance?.stopFrame]);
+
+    const frameBounds = useMemo(() => {
+        const preferredBounds = validationBounds || fallbackJobBounds;
+        if (!preferredBounds) {
+            return null;
+        }
+
+        return {
+            ...preferredBounds,
+            count: preferredBounds.stop - preferredBounds.start + 1,
+        };
+    }, [validationBounds, fallbackJobBounds]);
 
     const filteredSelectedIndices = useMemo((): number[] => {
         if (!remoteResult?.selected_indices || !frameBounds) {
@@ -494,15 +307,6 @@ export default function SAMRemoteRunner(
                     });
                     return;
                 }
-                const videoReference = values.video?.trim();
-                if (!videoReference) {
-                    notification.warning({
-                        message: 'Cannot process video',
-                        description: 'Provide a video URL or data URI before submitting.',
-                    });
-                    return;
-                }
-
                 abortControllerRef.current?.abort();
                 const abortController = new AbortController();
                 abortControllerRef.current = abortController;
@@ -512,6 +316,18 @@ export default function SAMRemoteRunner(
                 setLoading(true);
                 const hideMessage = message.loading('Sending video processing request...', 0);
                 try {
+                    const access = await mintVideoAccess(jobInstance.id);
+                    const accessBounds = Number.isInteger(access.media?.start_frame) &&
+                        Number.isInteger(access.media?.stop_frame) ? {
+                            start: access.media?.start_frame as number,
+                            stop: access.media?.stop_frame as number,
+                        } : {
+                            start: jobInstance.startFrame,
+                            stop: jobInstance.stopFrame,
+                        };
+                    setValidationBounds(accessBounds);
+                    const sourceVideoURL = values.debugVideoURL?.trim() || access.download_url;
+
                     const submitResult = await submitVideoJob({
                         endpoint: values.endpoint,
                         signal: abortController.signal,
@@ -522,12 +338,11 @@ export default function SAMRemoteRunner(
                             job: jobInstance.id,
                             frame,
                             mode: jobInstance.mode,
-                            // May be auto-derived from current CVAT job/task media or manually overridden in the form.
-                            video: videoReference,
                             stride: values.stride,
                             n_clusters: values.nClusters,
                             budget: values.budget,
                             include_first: values.includeFirst,
+                            source_video_url: sourceVideoURL,
                             source_reference: {
                                 task: jobInstance.taskId,
                                 job: jobInstance.id,
@@ -546,37 +361,40 @@ export default function SAMRemoteRunner(
                     if (result.state === 'success') {
                         saveLastValues(runnerStorageKey, {
                             ...values,
-                            video: videoReference,
                         });
                         setRemoteResult(result);
-                        const safeSelectedIndices = (result.selected_indices || []).filter((index: number): boolean => {
-                            if (!frameBounds) {
-                                return false;
-                            }
-                            return Number.isInteger(index) && index >= frameBounds.start && index <= frameBounds.stop;
-                        });
+                        const safeSelectedIndices = (result.selected_indices || []).filter((index: number): boolean => (
+                            Number.isInteger(index) &&
+                            index >= accessBounds.start &&
+                            index <= accessBounds.stop
+                        ));
 
                         if (safeSelectedIndices.length) {
                             setSelectedFrame(safeSelectedIndices[0]);
                         }
 
-                        if (result.n_total_frames && frameBounds && result.n_total_frames !== frameBounds.count) {
+                        if (
+                            result.n_total_frames &&
+                            accessBounds &&
+                            result.n_total_frames !== (accessBounds.stop - accessBounds.start + 1)
+                        ) {
                             notification.warning({
                                 message: 'Frame count mismatch',
                                 description: `Remote n_total_frames=${result.n_total_frames} differs from ` +
-                                    `current CVAT media frame count=${frameBounds.count}.`,
+                                    `current frame count=${accessBounds.stop - accessBounds.start + 1}.`,
                             });
                         }
 
                         const outOfRangeSelectedCount = (
                             result.selected_indices || []
                         ).length - safeSelectedIndices.length;
-                        const outOfRangeCandidateCount = (result.candidate_indices || []).filter(
-                            (index: number): boolean => !frameBounds ||
+                        const outOfRangeCandidateCount = (result.candidate_indices || [])
+                            .filter((index: number): boolean => (
                                 !Number.isInteger(index) ||
-                                index < frameBounds.start ||
-                                index > frameBounds.stop,
-                        ).length;
+                                index < accessBounds.start ||
+                                index > accessBounds.stop
+                            ))
+                            .length;
 
                         if (outOfRangeSelectedCount > 0 || outOfRangeCandidateCount > 0) {
                             notification.warning({
@@ -697,23 +515,35 @@ export default function SAMRemoteRunner(
                 <Input placeholder='https://backend.example/sam-callback' allowClear />
             </Form.Item>
             <Form.Item
-                label='video URL or data URI'
-                name='video'
-                style={{ marginBottom: 8 }}
-                rules={[{ validator: validateVideoReference }]}
-            >
-                <Input.TextArea
-                    autoSize={{ minRows: 2, maxRows: 6 }}
-                    placeholder='https://storage.example/video.mp4 or data:video/mp4;base64,...'
-                />
-            </Form.Item>
-            <Form.Item
                 label='callback_token (optional)'
                 name='callbackToken'
                 style={{ marginBottom: 12 }}
             >
                 <Input placeholder='token to resume webhook result retrieval' allowClear />
             </Form.Item>
+            <Collapse
+                size='small'
+                style={{ marginBottom: 12 }}
+                items={[
+                    {
+                        key: 'advanced',
+                        label: 'Advanced',
+                        children: (
+                            <Form.Item
+                                label='Debug override: source video URL or data URI (optional)'
+                                name='debugVideoURL'
+                                style={{ marginBottom: 0 }}
+                                rules={[{ validator: validateVideoReference }]}
+                            >
+                                <Input.TextArea
+                                    autoSize={{ minRows: 2, maxRows: 6 }}
+                                    placeholder='https://storage.example/video.mp4 or data:video/mp4;base64,...'
+                                />
+                            </Form.Item>
+                        ),
+                    },
+                ]}
+            />
 
             <Space.Compact block>
                 <Button type='primary' htmlType='submit' loading={loading} disabled={loading} style={{ width: '100%' }}>
