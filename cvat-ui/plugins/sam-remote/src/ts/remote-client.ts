@@ -41,6 +41,20 @@ export interface SubmitVideoJobResponse {
     pollResult: NormalizedRemoteResult;
 }
 
+export interface MintVideoAccessOptions {
+    ttl_sec?: number;
+    single_use?: boolean;
+}
+
+export interface MintVideoAccessResponse {
+    download_url: string;
+    expires_at?: string;
+    media?: {
+        start_frame?: number;
+        stop_frame?: number;
+    };
+}
+
 interface PollResponse {
     state: RemoteResultState;
     payload: Record<string, unknown>;
@@ -229,6 +243,45 @@ async function fetchResult(url: string, signal?: AbortSignal): Promise<Normalize
     }
 
     return normalized;
+}
+
+export async function mintVideoAccess(
+    jobId: number,
+    options: MintVideoAccessOptions = { ttl_sec: 600, single_use: true },
+): Promise<MintVideoAccessResponse> {
+    const response = await fetch(`/api/jobs/${jobId}/video/access`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+            ttl_sec: options.ttl_sec ?? 600,
+            single_use: options.single_use ?? true,
+        }),
+    });
+
+    const payload = await parseJSONResponse(response);
+    if (!response.ok) {
+        throw new Error((typeof payload.detail === 'string' && payload.detail) || `Failed to mint video access: ${response.status}`);
+    }
+
+    const downloadURL = typeof payload.download_url === 'string' ? payload.download_url.trim() : '';
+    if (!downloadURL) {
+        throw new Error('Video access response is missing download_url');
+    }
+
+    const media = (typeof payload.media === 'object' && payload.media ? payload.media : null) as Record<string, unknown> | null;
+    const startFrame = Number(media?.start_frame);
+    const stopFrame = Number(media?.stop_frame);
+
+    return {
+        download_url: downloadURL,
+        expires_at: typeof payload.expires_at === 'string' ? payload.expires_at : undefined,
+        media: media ? {
+            ...(Number.isFinite(startFrame) ? { start_frame: startFrame } : {}),
+            ...(Number.isFinite(stopFrame) ? { stop_frame: stopFrame } : {}),
+        } : undefined,
+    };
 }
 
 export async function submitVideoJob(options: SubmitVideoJobOptions): Promise<SubmitVideoJobResponse> {
