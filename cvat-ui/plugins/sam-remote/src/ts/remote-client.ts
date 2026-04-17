@@ -77,6 +77,16 @@ const DEFAULT_MAX_TIMEOUT_MS = 3 * 60 * 1000;
 const DEFAULT_INITIAL_DELAY_MS = 1000;
 const DEFAULT_MAX_DELAY_MS = 10000;
 
+function getCookie(name: string): string | null {
+    const escapedName = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const match = document.cookie.match(new RegExp(`(?:^|;\\s*)${escapedName}=([^;]+)`));
+    return match ? decodeURIComponent(match[1]) : null;
+}
+
+function getCSRFToken(): string | null {
+    return getCookie('csrftoken');
+}
+
 function normalizeState(rawState: unknown): RemoteResultState {
     const value = String(rawState || '').toLowerCase();
     if (['success', 'completed', 'done', 'finished'].includes(value)) {
@@ -249,10 +259,13 @@ export async function mintVideoAccess(
     jobId: number,
     options: MintVideoAccessOptions = { ttl_sec: 600, single_use: true },
 ): Promise<MintVideoAccessResponse> {
+    const csrfToken = getCSRFToken();
     const response = await fetch(`/api/jobs/${jobId}/video/access`, {
         method: 'POST',
+        credentials: 'same-origin',
         headers: {
             'Content-Type': 'application/json',
+            ...(csrfToken ? { 'X-CSRFToken': csrfToken } : {}),
         },
         body: JSON.stringify({
             ttl_sec: options.ttl_sec ?? 600,
