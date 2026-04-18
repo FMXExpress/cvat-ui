@@ -52,6 +52,7 @@ export interface JobVideoPredictionStatus {
     selected_indices?: unknown;
     candidate_indices?: unknown;
     n_total_frames?: unknown;
+    keyframes?: unknown;
     [key: string]: unknown;
 }
 
