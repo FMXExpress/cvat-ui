@@ -7,11 +7,35 @@ export type RemoteResultState = 'pending' | 'running' | 'completed' | 'failed' |
 export interface NormalizedRemoteResult {
     state: RemoteResultState;
     error?: string;
+    http_status?: number;
+    request_id?: string;
     selected_indices?: number[];
     candidate_indices?: number[];
     n_total_frames?: number;
     keyframes?: unknown;
     webhook_payload?: unknown;
+}
+
+export class RemoteRequestError extends Error {
+    stage: 'access' | 'submit';
+    status: number;
+    detail?: string;
+    requestId?: string;
+
+    constructor(
+        stage: 'access' | 'submit',
+        status: number,
+        message: string,
+        detail?: string,
+        requestId?: string,
+    ) {
+        super(message);
+        this.name = 'RemoteRequestError';
+        this.stage = stage;
+        this.status = status;
+        this.detail = detail;
+        this.requestId = requestId;
+    }
 }
 
 export interface SubmitVideoPredictionInput {
@@ -155,6 +179,8 @@ function normalizeResponse(payload: Record<string, unknown>): NormalizedRemoteRe
     return {
         state: normalizeState(payload.state || payload.status),
         error: typeof error === 'string' && error ? error : undefined,
+        http_status: Number.isFinite(Number(payload.status_code)) ? Number(payload.status_code) : undefined,
+        request_id: typeof payload.request_id === 'string' ? payload.request_id : undefined,
         selected_indices: selected,
         candidate_indices: candidate,
         n_total_frames: Number.isFinite(nTotalFrames) ? nTotalFrames : undefined,
@@ -220,7 +246,13 @@ export async function mintVideoAccess(
 
     const payload = await parseJSONResponse(response);
     if (!response.ok) {
-        throw new Error(extractDetailMessage(payload) || `Failed to mint video access: ${response.status}`);
+        const detail = extractDetailMessage(payload);
+        throw new RemoteRequestError(
+            'access',
+            response.status,
+            detail || `Failed to mint video access: ${response.status}`,
+            detail,
+        );
     }
 
     const downloadURL = typeof payload.download_url === 'string' ? payload.download_url.trim() : '';
@@ -256,8 +288,14 @@ export async function submitVideoPrediction(
 
     const responsePayload = await parseJSONResponse(response);
     if (!response.ok) {
-        throw new Error(
-            extractDetailMessage(responsePayload) || `Prediction request failed with status ${response.status}`,
+        const detail = extractDetailMessage(responsePayload);
+        const requestId = typeof responsePayload.request_id === 'string' ? responsePayload.request_id : undefined;
+        throw new RemoteRequestError(
+            'submit',
+            response.status,
+            detail || `Prediction request failed with status ${response.status}`,
+            detail,
+            requestId,
         );
     }
 
@@ -298,6 +336,8 @@ export async function pollVideoPredictionStatus(
             return {
                 ...normalized,
                 state: 'failed',
+                http_status: response.status,
+                request_id: requestId,
                 error: normalized.error || `Polling request failed: ${response.status}`,
             };
         }
@@ -306,6 +346,7 @@ export async function pollVideoPredictionStatus(
             return {
                 ...normalized,
                 state: 'completed',
+                request_id: normalized.request_id || requestId,
             };
         }
 
@@ -313,6 +354,7 @@ export async function pollVideoPredictionStatus(
             return {
                 ...normalized,
                 state: normalized.state,
+                request_id: normalized.request_id || requestId,
                 error: normalized.error || 'Prediction request failed',
             };
         }
@@ -323,6 +365,7 @@ export async function pollVideoPredictionStatus(
 
     return {
         state: 'failed',
+        request_id: requestId,
         error: `Timed out after ${maxTimeoutMs}ms while polling remote job status`,
     };
 }
