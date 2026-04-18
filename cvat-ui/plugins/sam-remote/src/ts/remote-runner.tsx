@@ -333,20 +333,13 @@ export default function SAMRemoteRunner(
                         signal: abortController.signal,
                         callbackURL: values.callbackURL?.trim() || undefined,
                         callbackToken: values.callbackToken?.trim() || undefined,
+                        // Keep params aligned with the strict remote API schema; do not include local context-only keys.
                         params: {
-                            task: jobInstance.taskId,
-                            job: jobInstance.id,
-                            frame,
-                            mode: jobInstance.mode,
                             stride: values.stride,
                             n_clusters: values.nClusters,
                             budget: values.budget,
                             include_first: values.includeFirst,
                             source_video_url: sourceVideoURL,
-                            source_reference: {
-                                task: jobInstance.taskId,
-                                job: jobInstance.id,
-                            },
                         },
                     });
 
