@@ -90,8 +90,12 @@ function makeSAMRemoteTopBarAction(
                     </div>
                 )}
             >
-                <Button type='link' className='cvat-annotation-header-button'>
-                    SAM Remote
+                <Button
+                    type='link'
+                    className='cvat-annotation-header-button'
+                    aria-label='SAM Remote'
+                >
+                    🎬
                 </Button>
             </Dropdown>
         );
