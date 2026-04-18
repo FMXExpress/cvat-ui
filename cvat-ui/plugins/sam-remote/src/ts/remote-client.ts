@@ -17,7 +17,8 @@ export interface SubmitVideoJobParams {
     n_clusters: number;
     budget: number;
     include_first: boolean;
-    [key: string]: unknown;
+    // Remote API key for the source media location.
+    video: string;
 }
 
 export interface VideoSource {
