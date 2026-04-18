@@ -23,8 +23,8 @@ import { Job } from 'cvat-core-wrapper';
 import {
     mintVideoAccess,
     NormalizedRemoteResult,
-    pollJobStatus,
-    submitVideoJob,
+    pollVideoPredictionStatus,
+    submitVideoPrediction,
 } from './remote-client';
 
 interface InteractorPluginTargetProps {
@@ -38,9 +38,7 @@ interface InteractorExtraProps {
 
 interface SAMRemotePluginConfig {
     endpoint?: string;
-    callbackToken?: string;
     requireEndpoint?: boolean;
-    requireCallbackToken?: boolean;
 }
 
 interface RemoteRunnerValues {
@@ -50,8 +48,6 @@ interface RemoteRunnerValues {
     budget: number;
     includeFirst: boolean;
     debugVideoURL?: string;
-    callbackURL?: string;
-    callbackToken?: string;
 }
 
 const DEFAULT_VALUES: RemoteRunnerValues = {
@@ -61,18 +57,12 @@ const DEFAULT_VALUES: RemoteRunnerValues = {
     budget: 8,
     includeFirst: true,
     debugVideoURL: '',
-    callbackURL: '',
-    callbackToken: '',
 };
 
 function getMissingConfigFields(config: SAMRemotePluginConfig): string[] {
     const missingFields: string[] = [];
     if (config.requireEndpoint && !config.endpoint?.trim()) {
         missingFields.push('endpoint');
-    }
-
-    if (config.requireCallbackToken && !config.callbackToken?.trim()) {
-        missingFields.push('token');
     }
 
     return missingFields;
@@ -142,8 +132,6 @@ function loadLastValues(key: string | null): RemoteRunnerValues {
             budget: Math.max(1, Number(parsed.budget) || DEFAULT_VALUES.budget),
             includeFirst: typeof parsed.includeFirst === 'boolean' ? parsed.includeFirst : DEFAULT_VALUES.includeFirst,
             debugVideoURL: typeof parsed.debugVideoURL === 'string' ? parsed.debugVideoURL : DEFAULT_VALUES.debugVideoURL,
-            callbackURL: typeof parsed.callbackURL === 'string' ? parsed.callbackURL : '',
-            callbackToken: typeof parsed.callbackToken === 'string' ? parsed.callbackToken : '',
         };
     } catch {
         return DEFAULT_VALUES;
@@ -183,9 +171,8 @@ export default function SAMRemoteRunner(
         form.setFieldsValue({
             ...lastValues,
             endpoint: pluginConfig.endpoint?.trim() || lastValues.endpoint,
-            callbackToken: pluginConfig.callbackToken?.trim() || lastValues.callbackToken,
         });
-    }, [form, runnerStorageKey, pluginConfig.endpoint, pluginConfig.callbackToken]);
+    }, [form, runnerStorageKey, pluginConfig.endpoint]);
 
     useEffect(() => (): void => {
         abortControllerRef.current?.abort();
@@ -317,10 +304,13 @@ export default function SAMRemoteRunner(
                 const hideMessage = message.loading('Sending video processing request...', 0);
                 try {
                     const access = await mintVideoAccess(jobInstance.id);
-                    const accessBounds = Number.isInteger(access.media?.start_frame) &&
-                        Number.isInteger(access.media?.stop_frame) ? {
-                            start: access.media?.start_frame as number,
-                            stop: access.media?.stop_frame as number,
+                    const media = access.media || {};
+                    const mediaStartFrame = Number((media as Record<string, unknown>).start_frame);
+                    const mediaStopFrame = Number((media as Record<string, unknown>).stop_frame);
+                    const accessBounds = Number.isInteger(mediaStartFrame) &&
+                        Number.isInteger(mediaStopFrame) ? {
+                            start: mediaStartFrame,
+                            stop: mediaStopFrame,
                         } : {
                             start: jobInstance.startFrame,
                             stop: jobInstance.stopFrame,
@@ -328,26 +318,18 @@ export default function SAMRemoteRunner(
                     setValidationBounds(accessBounds);
                     const sourceVideoURL = values.debugVideoURL?.trim() || access.download_url;
 
-                    const submitResult = await submitVideoJob({
-                        endpoint: values.endpoint,
-                        signal: abortController.signal,
-                        callbackURL: values.callbackURL?.trim() || undefined,
-                        callbackToken: values.callbackToken?.trim() || undefined,
-                        // Keep params aligned with the strict remote API schema; do not include local context-only keys.
-                        params: {
+                    const submitResult = await submitVideoPrediction(jobInstance.id, {
+                        remote_url: values.endpoint,
+                        input: {
                             stride: values.stride,
                             n_clusters: values.nClusters,
                             budget: values.budget,
                             include_first: values.includeFirst,
                             video: sourceVideoURL,
                         },
-                    });
+                    }, abortController.signal);
 
-                    const result = await pollJobStatus({
-                        endpoint: values.endpoint,
-                        statusURL: submitResult.statusURL,
-                        resultURL: submitResult.resultURL,
-                        callbackToken: values.callbackToken?.trim() || undefined,
+                    const result = await pollVideoPredictionStatus(jobInstance.id, submitResult.request_id, {
                         signal: abortController.signal,
                     });
 
@@ -402,11 +384,6 @@ export default function SAMRemoteRunner(
                         }
 
                         message.success('Video processing request completed successfully');
-                    } else if (result.state === 'canceled') {
-                        notification.warning({
-                            message: 'Remote SAM request canceled',
-                            description: 'The remote job was canceled before completion.',
-                        });
                     } else {
                         throw new Error(result.error || 'Remote SAM job failed');
                     }
@@ -499,20 +476,6 @@ export default function SAMRemoteRunner(
                 style={{ marginBottom: 8 }}
             >
                 <Switch />
-            </Form.Item>
-            <Form.Item
-                label='callback_url (optional)'
-                name='callbackURL'
-                style={{ marginBottom: 8 }}
-            >
-                <Input placeholder='https://backend.example/sam-callback' allowClear />
-            </Form.Item>
-            <Form.Item
-                label='callback_token (optional)'
-                name='callbackToken'
-                style={{ marginBottom: 12 }}
-            >
-                <Input placeholder='token to resume webhook result retrieval' allowClear />
             </Form.Item>
             <Collapse
                 size='small'
