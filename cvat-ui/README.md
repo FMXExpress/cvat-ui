@@ -78,6 +78,12 @@ Flow overview (request lifecycle):
    - Poll until terminal state:
      - `completed`, `failed`, or `expired`
    - Non-terminal states include `pending` and `running`.
+   - Polling timeout semantics in `pollVideoPredictionStatus`:
+     - `maxTimeoutMs` is optional.
+     - If `maxTimeoutMs` is a finite positive number, polling stops on timeout and returns a failed result.
+     - If `maxTimeoutMs` is omitted (default in `remote-runner.tsx`), polling continues until a terminal state
+       or explicit cancellation (`AbortSignal`, e.g. UI **Cancel** button / component unmount).
+     - Exponential backoff is unchanged (`initialDelayMs` default 1000, `maxDelayMs` default 10000).
 
 4. **Webhook handling** (CVAT backend ↔ remote SAM service)
    - CVAT backend owns callback/webhook communication with the remote predictor.
