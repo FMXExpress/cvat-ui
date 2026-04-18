@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: MIT
 
-export type RemoteResultState = 'pending' | 'running' | 'success' | 'failed' | 'canceled';
+export type RemoteResultState = 'pending' | 'running' | 'success' | 'failed';
 
 export interface NormalizedRemoteResult {
     state: RemoteResultState;
@@ -12,33 +12,27 @@ export interface NormalizedRemoteResult {
     n_total_frames?: number;
 }
 
-export interface SubmitVideoJobParams {
+export interface SubmitVideoPredictionInput {
     stride: number;
     n_clusters: number;
     budget: number;
     include_first: boolean;
-    // Remote API key for the source media location.
     video: string;
+    [key: string]: unknown;
 }
 
-export interface VideoSource {
-    file?: Blob;
-    signedURL?: string;
+export interface SubmitVideoPredictionOptions {
+    remote_url: string;
+    input: SubmitVideoPredictionInput;
 }
 
-export interface SubmitVideoJobOptions {
-    endpoint: string;
-    videoSource?: VideoSource;
-    params: SubmitVideoJobParams;
-    callbackURL?: string;
-    callbackToken?: string;
-    signal?: AbortSignal;
+export interface JobVideoPredictionSubmitResponse {
+    request_id: string;
+    status?: string;
+    detail?: unknown;
 }
 
-export interface SubmitVideoJobResponse {
-    jobID: string;
-    statusURL: string;
-    resultURL?: string;
+export interface SubmitVideoPredictionResponse extends JobVideoPredictionSubmitResponse {
     pollResult: NormalizedRemoteResult;
 }
 
@@ -47,27 +41,23 @@ export interface MintVideoAccessOptions {
     single_use?: boolean;
 }
 
-export interface MintVideoAccessResponse {
+export interface JobVideoAccess {
     download_url: string;
     expires_at?: string;
-    media?: {
-        start_frame?: number;
-        stop_frame?: number;
-    };
+    frame_hints?: Record<string, unknown>;
+    media?: Record<string, unknown>;
 }
 
-interface PollResponse {
-    state: RemoteResultState;
-    payload: Record<string, unknown>;
-    resultURL?: string;
+export interface JobVideoPredictionStatus {
+    state: string;
+    detail?: unknown;
+    selected_indices?: unknown;
+    candidate_indices?: unknown;
+    n_total_frames?: unknown;
+    [key: string]: unknown;
 }
 
-export interface PollJobStatusOptions {
-    endpoint: string;
-    statusURL?: string;
-    resultURL?: string;
-    jobID?: string;
-    callbackToken?: string;
+export interface PollVideoPredictionStatusOptions {
     maxTimeoutMs?: number;
     initialDelayMs?: number;
     maxDelayMs?: number;
@@ -94,12 +84,8 @@ function normalizeState(rawState: unknown): RemoteResultState {
         return 'success';
     }
 
-    if (['failed', 'error'].includes(value)) {
+    if (['failed', 'error', 'expired'].includes(value)) {
         return 'failed';
-    }
-
-    if (['canceled', 'cancelled', 'aborted'].includes(value)) {
-        return 'canceled';
     }
 
     if (['pending', 'queued', 'created'].includes(value)) {
@@ -122,7 +108,7 @@ function toNumberArray(value: unknown): number[] | undefined {
 }
 
 function normalizeResponse(payload: Record<string, unknown>): NormalizedRemoteResult {
-    const error = payload.error || payload.message || payload.detail;
+    const error = extractDetailMessage(payload) || payload.error || payload.message;
     const selected = toNumberArray(payload.selected_indices || payload.selectedIndices || payload.selectedFrames);
     const candidate = toNumberArray(payload.candidate_indices || payload.candidateIndices || payload.candidateFrames);
     const nTotalFrames = Number(payload.n_total_frames || payload.nTotalFrames || payload.totalFrames);
@@ -136,8 +122,40 @@ function normalizeResponse(payload: Record<string, unknown>): NormalizedRemoteRe
     };
 }
 
-function resolveURL(value: string, base: string): string {
-    return new URL(value, base).toString();
+function extractDetailMessage(payload: Record<string, unknown>): string | undefined {
+    const detail = payload.detail;
+    if (typeof detail === 'string' && detail.trim()) {
+        return detail.trim();
+    }
+
+    if (Array.isArray(detail)) {
+        const parts = detail
+            .map((item: unknown): string => {
+                if (typeof item === 'string') {
+                    return item.trim();
+                }
+
+                if (item && typeof item === 'object' && 'msg' in item && typeof item.msg === 'string') {
+                    return item.msg.trim();
+                }
+
+                return '';
+            })
+            .filter((item: string): boolean => Boolean(item));
+
+        if (parts.length) {
+            return parts.join('; ');
+        }
+    }
+
+    if (detail && typeof detail === 'object') {
+        const nestedDetail = (detail as { detail?: unknown }).detail;
+        if (typeof nestedDetail === 'string' && nestedDetail.trim()) {
+            return nestedDetail.trim();
+        }
+    }
+
+    return undefined;
 }
 
 async function parseJSONResponse(response: Response): Promise<Record<string, unknown>> {
@@ -177,89 +195,10 @@ function sleep(timeout: number, signal?: AbortSignal): Promise<void> {
     });
 }
 
-function buildStatusURL(options: Pick<PollJobStatusOptions, 'endpoint' | 'statusURL' | 'jobID'>): string {
-    if (options.statusURL) {
-        return resolveURL(options.statusURL, options.endpoint);
-    }
-
-    if (options.jobID) {
-        return resolveURL(`/status/${encodeURIComponent(options.jobID)}`, options.endpoint);
-    }
-
-    return resolveURL('/status', options.endpoint);
-}
-
-function extractSubmitInfo(payload: Record<string, unknown>, endpoint: string): {
-    jobID: string;
-    statusURL: string;
-    resultURL?: string;
-} {
-    const jobID = String(payload.job_id || payload.jobId || payload.id || '').trim();
-    const statusURLRaw = payload.status_url || payload.statusUrl || payload.url || '';
-    const resultURLRaw = payload.result_url || payload.resultUrl || undefined;
-
-    if (!jobID && !statusURLRaw) {
-        throw new Error('Remote service did not return a job identifier or status URL');
-    }
-
-    const statusURL = String(statusURLRaw || `/status/${encodeURIComponent(jobID)}`);
-
-    return {
-        jobID,
-        statusURL: resolveURL(statusURL, endpoint),
-        resultURL: resultURLRaw ? resolveURL(String(resultURLRaw), endpoint) : undefined,
-    };
-}
-
-async function fetchPollResponse(url: string, signal?: AbortSignal): Promise<PollResponse> {
-    const response = await fetch(url, { method: 'GET', signal });
-    const payload = await parseJSONResponse(response);
-
-    if (!response.ok) {
-        const normalized = normalizeResponse(payload);
-        return {
-            state: 'failed',
-            payload: {
-                ...payload,
-                error: normalized.error || `Polling request failed: ${response.status}`,
-            },
-        };
-    }
-
-    let resultURL: string | undefined;
-    if (typeof payload.result_url === 'string') {
-        resultURL = payload.result_url;
-    } else if (typeof payload.resultUrl === 'string') {
-        resultURL = payload.resultUrl;
-    }
-
-    return {
-        state: normalizeState(payload.state || payload.status),
-        payload,
-        resultURL,
-    };
-}
-
-async function fetchResult(url: string, signal?: AbortSignal): Promise<NormalizedRemoteResult> {
-    const response = await fetch(url, { method: 'GET', signal });
-    const payload = await parseJSONResponse(response);
-    const normalized = normalizeResponse(payload);
-
-    if (!response.ok) {
-        return {
-            ...normalized,
-            state: 'failed',
-            error: normalized.error || `Failed to retrieve remote result: ${response.status}`,
-        };
-    }
-
-    return normalized;
-}
-
 export async function mintVideoAccess(
     jobId: number,
     options: MintVideoAccessOptions = { ttl_sec: 600, single_use: true },
-): Promise<MintVideoAccessResponse> {
+): Promise<JobVideoAccess> {
     const csrfToken = getCSRFToken();
     const response = await fetch(`/api/jobs/${jobId}/video/access`, {
         method: 'POST',
@@ -276,7 +215,7 @@ export async function mintVideoAccess(
 
     const payload = await parseJSONResponse(response);
     if (!response.ok) {
-        throw new Error((typeof payload.detail === 'string' && payload.detail) || `Failed to mint video access: ${response.status}`);
+        throw new Error(extractDetailMessage(payload) || `Failed to mint video access: ${response.status}`);
     }
 
     const downloadURL = typeof payload.download_url === 'string' ? payload.download_url.trim() : '';
@@ -284,98 +223,91 @@ export async function mintVideoAccess(
         throw new Error('Video access response is missing download_url');
     }
 
-    const media = (typeof payload.media === 'object' && payload.media ? payload.media : null) as Record<string, unknown> | null;
-    const startFrame = Number(media?.start_frame);
-    const stopFrame = Number(media?.stop_frame);
-
     return {
         download_url: downloadURL,
         expires_at: typeof payload.expires_at === 'string' ? payload.expires_at : undefined,
-        media: media ? {
-            ...(Number.isFinite(startFrame) ? { start_frame: startFrame } : {}),
-            ...(Number.isFinite(stopFrame) ? { stop_frame: stopFrame } : {}),
-        } : undefined,
+        frame_hints: payload.frame_hints && typeof payload.frame_hints === 'object' ?
+            payload.frame_hints as Record<string, unknown> : undefined,
+        media: payload.media && typeof payload.media === 'object' ? payload.media as Record<string, unknown> : undefined,
     };
 }
 
-export async function submitVideoJob(options: SubmitVideoJobOptions): Promise<SubmitVideoJobResponse> {
-    const payload: Record<string, unknown> = {
-        ...options.params,
-    };
-    if (options.videoSource?.file || options.videoSource?.signedURL) {
-        payload.video = {
-            ...(options.videoSource.file ? { file: options.videoSource.file } : {}),
-            ...(options.videoSource.signedURL ? { url: options.videoSource.signedURL } : {}),
-        };
-    }
-
-    if (options.callbackURL) {
-        payload.callback_url = options.callbackURL;
-    }
-
-    if (options.callbackToken) {
-        payload.callback_token = options.callbackToken;
-    }
-
-    const response = await fetch(options.endpoint, {
+export async function submitVideoPrediction(
+    jobId: number,
+    options: SubmitVideoPredictionOptions,
+    signal?: AbortSignal,
+): Promise<SubmitVideoPredictionResponse> {
+    const csrfToken = getCSRFToken();
+    const response = await fetch(`/api/jobs/${jobId}/video/predictions`, {
         method: 'POST',
+        credentials: 'same-origin',
         headers: {
             'Content-Type': 'application/json',
+            ...(csrfToken ? { 'X-CSRFToken': csrfToken } : {}),
         },
-        body: JSON.stringify({ input: payload }),
-        signal: options.signal,
+        body: JSON.stringify(options),
+        signal,
     });
 
     const responsePayload = await parseJSONResponse(response);
     if (!response.ok) {
-        const normalized = normalizeResponse(responsePayload);
-        throw new Error(normalized.error || `Remote request failed with status ${response.status}`);
+        throw new Error(extractDetailMessage(responsePayload) || `Prediction request failed with status ${response.status}`);
     }
 
-    const submitInfo = extractSubmitInfo(responsePayload, options.endpoint);
+    const requestId = String(responsePayload.request_id || '').trim();
+    if (!requestId) {
+        throw new Error('Prediction response is missing request_id');
+    }
 
     return {
-        ...submitInfo,
+        request_id: requestId,
+        status: typeof responsePayload.status === 'string' ? responsePayload.status : undefined,
+        detail: responsePayload.detail,
         pollResult: normalizeResponse(responsePayload),
     };
 }
 
-export async function pollJobStatus(options: PollJobStatusOptions): Promise<NormalizedRemoteResult> {
+export async function pollVideoPredictionStatus(
+    jobId: number,
+    requestId: string,
+    options: PollVideoPredictionStatusOptions = {},
+): Promise<NormalizedRemoteResult> {
     const maxTimeoutMs = options.maxTimeoutMs || DEFAULT_MAX_TIMEOUT_MS;
     const initialDelayMs = options.initialDelayMs || DEFAULT_INITIAL_DELAY_MS;
     const maxDelayMs = options.maxDelayMs || DEFAULT_MAX_DELAY_MS;
 
-    const statusURL = buildStatusURL(options);
+    const statusURL = `/api/jobs/${jobId}/video/predictions/${encodeURIComponent(requestId)}`;
     const deadline = Date.now() + maxTimeoutMs;
     let delay = initialDelayMs;
 
     while (Date.now() < deadline) {
-        const poll = await fetchPollResponse(statusURL, options.signal);
-        const normalized = normalizeResponse(poll.payload);
+        const response = await fetch(statusURL, {
+            method: 'GET',
+            credentials: 'same-origin',
+            signal: options.signal,
+        });
+        const payload = await parseJSONResponse(response) as JobVideoPredictionStatus;
+        const normalized = normalizeResponse(payload);
+        if (!response.ok) {
+            return {
+                ...normalized,
+                state: 'failed',
+                error: normalized.error || `Polling request failed: ${response.status}`,
+            };
+        }
 
-        if (poll.state === 'success') {
-            const returnedResultURL = poll.resultURL ? resolveURL(poll.resultURL, options.endpoint) : undefined;
-            const explicitResultURL = options.resultURL ? resolveURL(options.resultURL, options.endpoint) : undefined;
-            const resumeResultURL = options.callbackToken ?
-                resolveURL(`/result/${encodeURIComponent(options.callbackToken)}`, options.endpoint) :
-                undefined;
-
-            const resultURL = returnedResultURL || explicitResultURL || resumeResultURL;
-
-            if (resultURL && (!normalized.selected_indices || !normalized.candidate_indices)) {
-                return fetchResult(resultURL, options.signal);
-            }
-
+        if (normalized.state === 'success') {
             return {
                 ...normalized,
                 state: 'success',
             };
         }
 
-        if (poll.state === 'failed' || poll.state === 'canceled') {
+        if (normalized.state === 'failed') {
             return {
                 ...normalized,
-                state: poll.state,
+                state: 'failed',
+                error: normalized.error || 'Prediction request failed',
             };
         }
 
