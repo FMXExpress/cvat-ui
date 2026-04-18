@@ -37,12 +37,14 @@ interface InteractorExtraProps {
 }
 
 interface SAMRemotePluginConfig {
-    endpoint?: string;
-    requireEndpoint?: boolean;
+    remoteURL?: string;
+    endpoint?: string; // deprecated alias of remoteURL
+    requireRemoteURL?: boolean;
+    requireEndpoint?: boolean; // deprecated alias of requireRemoteURL
 }
 
 interface RemoteRunnerValues {
-    endpoint: string;
+    remoteURL: string;
     stride: number;
     nClusters: number;
     budget: number;
@@ -51,7 +53,7 @@ interface RemoteRunnerValues {
 }
 
 const DEFAULT_VALUES: RemoteRunnerValues = {
-    endpoint: '/api/lambda/functions/sam-remote',
+    remoteURL: '/api/lambda/functions/sam-remote',
     stride: 5,
     nClusters: 20,
     budget: 8,
@@ -144,16 +146,18 @@ function extractResultFrameIndices(result: NormalizedRemoteResult): number[] {
 
 function getMissingConfigFields(config: SAMRemotePluginConfig): string[] {
     const missingFields: string[] = [];
-    if (config.requireEndpoint && !config.endpoint?.trim()) {
-        missingFields.push('endpoint');
+    const requireRemoteURL = config.requireRemoteURL ?? config.requireEndpoint;
+    const configuredRemoteURL = config.remoteURL?.trim() || config.endpoint?.trim();
+    if (requireRemoteURL && !configuredRemoteURL) {
+        missingFields.push('remoteURL');
     }
 
     return missingFields;
 }
 
-function validateEndpoint(_: unknown, value: string): Promise<void> {
+function validateRemoteURL(_: unknown, value: string): Promise<void> {
     if (!value?.trim()) {
-        return Promise.reject(new Error('Base URL is required'));
+        return Promise.reject(new Error('Remote prediction URL is required'));
     }
 
     try {
@@ -163,7 +167,7 @@ function validateEndpoint(_: unknown, value: string): Promise<void> {
         }
         return Promise.resolve();
     } catch {
-        return Promise.reject(new Error('Enter a valid base URL or path'));
+        return Promise.reject(new Error('Enter a valid remote prediction URL or path'));
     }
 }
 
@@ -207,9 +211,9 @@ function loadLastValues(key: string | null): RemoteRunnerValues {
             return DEFAULT_VALUES;
         }
 
-        const parsed = JSON.parse(raw) as Partial<RemoteRunnerValues>;
+        const parsed = JSON.parse(raw) as Partial<RemoteRunnerValues> & { endpoint?: string };
         return {
-            endpoint: parsed.endpoint || DEFAULT_VALUES.endpoint,
+            remoteURL: parsed.remoteURL || parsed.endpoint || DEFAULT_VALUES.remoteURL,
             stride: Math.max(1, Number(parsed.stride) || DEFAULT_VALUES.stride),
             nClusters: Math.max(1, Number(parsed.nClusters) || DEFAULT_VALUES.nClusters),
             budget: Math.max(1, Number(parsed.budget) || DEFAULT_VALUES.budget),
@@ -253,9 +257,9 @@ export default function SAMRemoteRunner(
 
         form.setFieldsValue({
             ...lastValues,
-            endpoint: pluginConfig.endpoint?.trim() || lastValues.endpoint,
+            remoteURL: pluginConfig.remoteURL?.trim() || pluginConfig.endpoint?.trim() || lastValues.remoteURL,
         });
-    }, [form, runnerStorageKey, pluginConfig.endpoint]);
+    }, [form, runnerStorageKey, pluginConfig.remoteURL, pluginConfig.endpoint]);
 
     useEffect(() => (): void => {
         abortControllerRef.current?.abort();
@@ -402,7 +406,7 @@ export default function SAMRemoteRunner(
                     const sourceVideoURL = values.debugVideoURL?.trim() || access.download_url;
 
                     const submitResult = await submitVideoPrediction(jobInstance.id, {
-                        remote_url: values.endpoint,
+                        remote_url: values.remoteURL,
                         input: {
                             stride: values.stride,
                             n_clusters: values.nClusters,
@@ -497,10 +501,11 @@ export default function SAMRemoteRunner(
                 />
             )}
             <Form.Item
-                label='Base URL / predict URL'
-                name='endpoint'
+                label='Remote prediction URL'
+                name='remoteURL'
                 style={{ marginBottom: 8 }}
-                rules={[{ validator: validateEndpoint }]}
+                extra='CVAT sends the request to this URL and handles callback/webhook updates for the job.'
+                rules={[{ validator: validateRemoteURL }]}
             >
                 <Input placeholder='https://server.example/predict or /api/lambda/functions/sam-remote' />
             </Form.Item>

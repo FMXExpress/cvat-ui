@@ -14,10 +14,10 @@ const AI_TOOLS_INTERACTOR_EXTRAS_PATH = 'aiTools.interactors.extras';
 const ANNOTATION_TOP_BAR_ACTIONS_PATH = 'annotationPage.topBar.actions.items';
 
 interface SAMRemotePluginConfig {
-    endpoint?: string;
-    callbackToken?: string;
-    requireEndpoint?: boolean;
-    requireCallbackToken?: boolean;
+    remoteURL?: string;
+    endpoint?: string; // deprecated alias of remoteURL
+    requireRemoteURL?: boolean;
+    requireEndpoint?: boolean; // deprecated alias of requireRemoteURL
 }
 
 function resolveSAMRemotePluginConfig(): SAMRemotePluginConfig {
@@ -57,8 +57,9 @@ function makeSAMRemoteTopBarAction(
     pluginConfig: SAMRemotePluginConfig,
 ): React.FC<InteractorExtraProps> {
     return function SAMRemoteTopBarAction({ targetProps = {} }: InteractorExtraProps): JSX.Element {
-        const hasMissingRequiredConfig = (pluginConfig.requireEndpoint && !pluginConfig.endpoint?.trim()) ||
-            (pluginConfig.requireCallbackToken && !pluginConfig.callbackToken?.trim());
+        const requireRemoteURL = pluginConfig.requireRemoteURL ?? pluginConfig.requireEndpoint;
+        const resolvedRemoteURL = pluginConfig.remoteURL?.trim() || pluginConfig.endpoint?.trim();
+        const hasMissingRequiredConfig = Boolean(requireRemoteURL && !resolvedRemoteURL);
 
         return (
             <Dropdown
@@ -79,7 +80,7 @@ function makeSAMRemoteTopBarAction(
                                 showIcon
                                 style={{ marginBottom: 12 }}
                                 message='SAM Remote needs plugin configuration'
-                                description='Set endpoint/token in CVAT_SAM_REMOTE_PLUGIN_CONFIG to run remote sampling.'
+                                description='Set remoteURL in CVAT_SAM_REMOTE_PLUGIN_CONFIG to run remote sampling. CVAT will call the remote service and manage webhook updates.'
                             />
                         )}
                         <SAMRemoteRunner
