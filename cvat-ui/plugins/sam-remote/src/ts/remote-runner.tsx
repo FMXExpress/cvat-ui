@@ -26,6 +26,7 @@ import {
     pollVideoPredictionStatus,
     submitVideoPrediction,
 } from './remote-client';
+import { adaptKeyframesPayload } from './keyframe-adapter';
 
 interface InteractorPluginTargetProps {
     jobInstance?: Job;
@@ -60,89 +61,6 @@ const DEFAULT_VALUES: RemoteRunnerValues = {
     includeFirst: true,
     debugVideoURL: '',
 };
-
-function flattenFrameCandidates(value: unknown): unknown[] {
-    if (!Array.isArray(value)) {
-        return [];
-    }
-
-    return value.flatMap((item: unknown): unknown[] => {
-        if (Array.isArray(item)) {
-            return flattenFrameCandidates(item);
-        }
-
-        return [item];
-    });
-}
-
-function extractFrameIndex(value: unknown): number | null {
-    if (typeof value === 'number' && Number.isFinite(value)) {
-        return Math.trunc(value);
-    }
-
-    if (typeof value === 'string' && value.trim() !== '') {
-        const parsed = Number(value);
-        if (Number.isFinite(parsed)) {
-            return Math.trunc(parsed);
-        }
-    }
-
-    if (value && typeof value === 'object') {
-        const record = value as Record<string, unknown>;
-        const candidateFields = [
-            record.frame,
-            record.frame_index,
-            record.frameIndex,
-            record.index,
-            record.idx,
-            record.id,
-            record.number,
-        ];
-
-        for (const candidate of candidateFields) {
-            const parsed = extractFrameIndex(candidate);
-            if (parsed !== null) {
-                return parsed;
-            }
-        }
-    }
-
-    return null;
-}
-
-function extractFrameIndicesFromPayload(payload: unknown): number[] {
-    if (!payload || typeof payload !== 'object') {
-        return [];
-    }
-
-    const record = payload as Record<string, unknown>;
-    const keyframeCandidates = [
-        record.keyframes,
-        record.selected_keyframes,
-        record.selected_indices,
-        record.selectedFrames,
-        record.frames,
-    ];
-    const rawCandidates = keyframeCandidates.flatMap(
-        (candidate: unknown): unknown[] => flattenFrameCandidates(candidate),
-    );
-
-    const indices = rawCandidates
-        .map((candidate: unknown): number | null => extractFrameIndex(candidate))
-        .filter((index: number | null): index is number => index !== null && Number.isInteger(index));
-
-    return Array.from(new Set(indices)).sort((left: number, right: number): number => left - right);
-}
-
-function extractResultFrameIndices(result: NormalizedRemoteResult): number[] {
-    const candidates = [
-        ...extractFrameIndicesFromPayload({ keyframes: result.keyframes }),
-        ...extractFrameIndicesFromPayload(result.webhook_payload),
-        ...(result.selected_indices || []),
-    ];
-
-    return Array.from(new Set(candidates)).sort((left: number, right: number): number => left - right);
-}
 
 function getMissingConfigFields(config: SAMRemotePluginConfig): string[] {
     const missingFields: string[] = [];
@@ -424,7 +342,11 @@ export default function SAMRemoteRunner(
                         saveLastValues(runnerStorageKey, {
                             ...values,
                         });
-                        const extractedFrameIndices = extractResultFrameIndices(result);
+                        const adaptedKeyframes = adaptKeyframesPayload(result.keyframes, accessBounds);
+                        const extractedFrameIndices = Array.from(new Set([
+                            ...adaptedKeyframes.selected_indices,
+                            ...(result.selected_indices || []),
+                        ])).sort((left: number, right: number): number => left - right);
                         const safeSelectedIndices = extractedFrameIndices.filter((index: number): boolean => (
                             Number.isInteger(index) &&
                             index >= accessBounds.start &&
@@ -433,7 +355,17 @@ export default function SAMRemoteRunner(
                         setRemoteResult({
                             ...result,
                             selected_indices: extractedFrameIndices,
+                            candidate_indices: adaptedKeyframes.candidate_indices || result.candidate_indices,
                         });
+
+                        if (adaptedKeyframes.diagnostics.length > 0) {
+                            notification.warning({
+                                message: 'Keyframe payload requires attention',
+                                description: adaptedKeyframes.diagnostics
+                                    .map((diagnostic): string => `${diagnostic.path}: ${diagnostic.message}`)
+                                    .join(' '),
+                            });
+                        }
 
                         if (safeSelectedIndices.length) {
                             setSelectedFrame(safeSelectedIndices[0]);
