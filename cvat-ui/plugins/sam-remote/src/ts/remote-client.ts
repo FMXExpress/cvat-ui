@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: MIT
 
-export type RemoteResultState = 'pending' | 'running' | 'success' | 'failed';
+export type RemoteResultState = 'pending' | 'running' | 'completed' | 'failed' | 'expired';
 
 export interface NormalizedRemoteResult {
     state: RemoteResultState;
@@ -10,6 +10,8 @@ export interface NormalizedRemoteResult {
     selected_indices?: number[];
     candidate_indices?: number[];
     n_total_frames?: number;
+    keyframes?: unknown;
+    webhook_payload?: unknown;
 }
 
 export interface SubmitVideoPredictionInput {
@@ -30,10 +32,6 @@ export interface JobVideoPredictionSubmitResponse {
     request_id: string;
     status?: string;
     detail?: unknown;
-}
-
-export interface SubmitVideoPredictionResponse extends JobVideoPredictionSubmitResponse {
-    pollResult: NormalizedRemoteResult;
 }
 
 export interface MintVideoAccessOptions {
@@ -80,11 +78,15 @@ function getCSRFToken(): string | null {
 
 function normalizeState(rawState: unknown): RemoteResultState {
     const value = String(rawState || '').toLowerCase();
-    if (['success', 'completed', 'done', 'finished'].includes(value)) {
-        return 'success';
+    if (['completed', 'done', 'finished', 'success'].includes(value)) {
+        return 'completed';
     }
 
-    if (['failed', 'error', 'expired'].includes(value)) {
+    if (['expired'].includes(value)) {
+        return 'expired';
+    }
+
+    if (['failed', 'error'].includes(value)) {
         return 'failed';
     }
 
@@ -107,23 +109,8 @@ function toNumberArray(value: unknown): number[] | undefined {
     return normalized.length ? normalized : undefined;
 }
 
-function normalizeResponse(payload: Record<string, unknown>): NormalizedRemoteResult {
-    const error = extractDetailMessage(payload) || payload.error || payload.message;
-    const selected = toNumberArray(payload.selected_indices || payload.selectedIndices || payload.selectedFrames);
-    const candidate = toNumberArray(payload.candidate_indices || payload.candidateIndices || payload.candidateFrames);
-    const nTotalFrames = Number(payload.n_total_frames || payload.nTotalFrames || payload.totalFrames);
-
-    return {
-        state: normalizeState(payload.state || payload.status),
-        error: typeof error === 'string' && error ? error : undefined,
-        selected_indices: selected,
-        candidate_indices: candidate,
-        n_total_frames: Number.isFinite(nTotalFrames) ? nTotalFrames : undefined,
-    };
-}
-
 function extractDetailMessage(payload: Record<string, unknown>): string | undefined {
-    const detail = payload.detail;
+    const { detail } = payload;
     if (typeof detail === 'string' && detail.trim()) {
         return detail.trim();
     }
@@ -156,6 +143,23 @@ function extractDetailMessage(payload: Record<string, unknown>): string | undefi
     }
 
     return undefined;
+}
+
+function normalizeResponse(payload: Record<string, unknown>): NormalizedRemoteResult {
+    const error = extractDetailMessage(payload) || payload.error || payload.message;
+    const selected = toNumberArray(payload.selected_indices || payload.selectedIndices || payload.selectedFrames);
+    const candidate = toNumberArray(payload.candidate_indices || payload.candidateIndices || payload.candidateFrames);
+    const nTotalFrames = Number(payload.n_total_frames || payload.nTotalFrames || payload.totalFrames);
+
+    return {
+        state: normalizeState(payload.state || payload.status),
+        error: typeof error === 'string' && error ? error : undefined,
+        selected_indices: selected,
+        candidate_indices: candidate,
+        n_total_frames: Number.isFinite(nTotalFrames) ? nTotalFrames : undefined,
+        keyframes: payload.keyframes,
+        webhook_payload: payload.webhook_payload || payload.webhookPayload,
+    };
 }
 
 async function parseJSONResponse(response: Response): Promise<Record<string, unknown>> {
@@ -236,7 +240,7 @@ export async function submitVideoPrediction(
     jobId: number,
     options: SubmitVideoPredictionOptions,
     signal?: AbortSignal,
-): Promise<SubmitVideoPredictionResponse> {
+): Promise<JobVideoPredictionSubmitResponse> {
     const csrfToken = getCSRFToken();
     const response = await fetch(`/api/jobs/${jobId}/video/predictions`, {
         method: 'POST',
@@ -251,7 +255,9 @@ export async function submitVideoPrediction(
 
     const responsePayload = await parseJSONResponse(response);
     if (!response.ok) {
-        throw new Error(extractDetailMessage(responsePayload) || `Prediction request failed with status ${response.status}`);
+        throw new Error(
+            extractDetailMessage(responsePayload) || `Prediction request failed with status ${response.status}`,
+        );
     }
 
     const requestId = String(responsePayload.request_id || '').trim();
@@ -263,7 +269,6 @@ export async function submitVideoPrediction(
         request_id: requestId,
         status: typeof responsePayload.status === 'string' ? responsePayload.status : undefined,
         detail: responsePayload.detail,
-        pollResult: normalizeResponse(responsePayload),
     };
 }
 
@@ -296,17 +301,17 @@ export async function pollVideoPredictionStatus(
             };
         }
 
-        if (normalized.state === 'success') {
+        if (normalized.state === 'completed') {
             return {
                 ...normalized,
-                state: 'success',
+                state: 'completed',
             };
         }
 
-        if (normalized.state === 'failed') {
+        if (normalized.state === 'failed' || normalized.state === 'expired') {
             return {
                 ...normalized,
-                state: 'failed',
+                state: normalized.state,
                 error: normalized.error || 'Prediction request failed',
             };
         }

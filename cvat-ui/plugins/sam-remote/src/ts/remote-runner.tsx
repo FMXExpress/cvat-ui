@@ -59,6 +59,89 @@ const DEFAULT_VALUES: RemoteRunnerValues = {
     debugVideoURL: '',
 };
 
+function flattenFrameCandidates(value: unknown): unknown[] {
+    if (!Array.isArray(value)) {
+        return [];
+    }
+
+    return value.flatMap((item: unknown): unknown[] => {
+        if (Array.isArray(item)) {
+            return flattenFrameCandidates(item);
+        }
+
+        return [item];
+    });
+}
+
+function extractFrameIndex(value: unknown): number | null {
+    if (typeof value === 'number' && Number.isFinite(value)) {
+        return Math.trunc(value);
+    }
+
+    if (typeof value === 'string' && value.trim() !== '') {
+        const parsed = Number(value);
+        if (Number.isFinite(parsed)) {
+            return Math.trunc(parsed);
+        }
+    }
+
+    if (value && typeof value === 'object') {
+        const record = value as Record<string, unknown>;
+        const candidateFields = [
+            record.frame,
+            record.frame_index,
+            record.frameIndex,
+            record.index,
+            record.idx,
+            record.id,
+            record.number,
+        ];
+
+        for (const candidate of candidateFields) {
+            const parsed = extractFrameIndex(candidate);
+            if (parsed !== null) {
+                return parsed;
+            }
+        }
+    }
+
+    return null;
+}
+
+function extractFrameIndicesFromPayload(payload: unknown): number[] {
+    if (!payload || typeof payload !== 'object') {
+        return [];
+    }
+
+    const record = payload as Record<string, unknown>;
+    const keyframeCandidates = [
+        record.keyframes,
+        record.selected_keyframes,
+        record.selected_indices,
+        record.selectedFrames,
+        record.frames,
+    ];
+    const rawCandidates = keyframeCandidates.flatMap(
+        (candidate: unknown): unknown[] => flattenFrameCandidates(candidate),
+    );
+
+    const indices = rawCandidates
+        .map((candidate: unknown): number | null => extractFrameIndex(candidate))
+        .filter((index: number | null): index is number => index !== null && Number.isInteger(index));
+
+    return Array.from(new Set(indices)).sort((left: number, right: number): number => left - right);
+}
+
+function extractResultFrameIndices(result: NormalizedRemoteResult): number[] {
+    const candidates = [
+        ...extractFrameIndicesFromPayload({ keyframes: result.keyframes }),
+        ...extractFrameIndicesFromPayload(result.webhook_payload),
+        ...(result.selected_indices || []),
+    ];
+
+    return Array.from(new Set(candidates)).sort((left: number, right: number): number => left - right);
+}
+
 function getMissingConfigFields(config: SAMRemotePluginConfig): string[] {
     const missingFields: string[] = [];
     if (config.requireEndpoint && !config.endpoint?.trim()) {
@@ -327,22 +410,26 @@ export default function SAMRemoteRunner(
                             include_first: values.includeFirst,
                             video: sourceVideoURL,
                         },
-                    }, abortController.signal);
+                    });
 
                     const result = await pollVideoPredictionStatus(jobInstance.id, submitResult.request_id, {
                         signal: abortController.signal,
                     });
 
-                    if (result.state === 'success') {
+                    if (result.state === 'completed') {
                         saveLastValues(runnerStorageKey, {
                             ...values,
                         });
-                        setRemoteResult(result);
-                        const safeSelectedIndices = (result.selected_indices || []).filter((index: number): boolean => (
+                        const extractedFrameIndices = extractResultFrameIndices(result);
+                        const safeSelectedIndices = extractedFrameIndices.filter((index: number): boolean => (
                             Number.isInteger(index) &&
                             index >= accessBounds.start &&
                             index <= accessBounds.stop
                         ));
+                        setRemoteResult({
+                            ...result,
+                            selected_indices: extractedFrameIndices,
+                        });
 
                         if (safeSelectedIndices.length) {
                             setSelectedFrame(safeSelectedIndices[0]);
@@ -360,10 +447,7 @@ export default function SAMRemoteRunner(
                             });
                         }
 
-                        const outOfRangeSelectedCount = (
-                            result.selected_indices || []
-                        ).length - safeSelectedIndices.length;
-                        const outOfRangeCandidateCount = (result.candidate_indices || [])
+                        const outOfRangeSelectedCount = extractedFrameIndices
                             .filter((index: number): boolean => (
                                 !Number.isInteger(index) ||
                                 index < accessBounds.start ||
@@ -371,15 +455,11 @@ export default function SAMRemoteRunner(
                             ))
                             .length;
 
-                        if (outOfRangeSelectedCount > 0 || outOfRangeCandidateCount > 0) {
+                        if (outOfRangeSelectedCount > 0) {
                             notification.warning({
                                 message: 'Remote indices outside current frame range',
-                                description: `${[
-                                    outOfRangeSelectedCount > 0 ? `${outOfRangeSelectedCount} selected indices` : '',
-                                    outOfRangeCandidateCount > 0 ? `${outOfRangeCandidateCount} candidate indices` : '',
-                                ]
-                                    .filter((item: string): boolean => Boolean(item))
-                                    .join(' and ')} are outside ${frameBounds?.start}-${frameBounds?.stop}.`,
+                                description: `${outOfRangeSelectedCount} selected indices are outside ` +
+                                    `${accessBounds.start}-${accessBounds.stop}.`,
                             });
                         }
 
