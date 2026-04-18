@@ -339,7 +339,7 @@ export default function SAMRemoteRunner(
                             n_clusters: values.nClusters,
                             budget: values.budget,
                             include_first: values.includeFirst,
-                            source_video_url: sourceVideoURL,
+                            video: sourceVideoURL,
                         },
                     });
 
