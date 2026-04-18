@@ -87,7 +87,6 @@ export interface PollVideoPredictionStatusOptions {
     signal?: AbortSignal;
 }
 
-const DEFAULT_MAX_TIMEOUT_MS = 3 * 60 * 1000;
 const DEFAULT_INITIAL_DELAY_MS = 1000;
 const DEFAULT_MAX_DELAY_MS = 10000;
 
@@ -316,15 +315,19 @@ export async function pollVideoPredictionStatus(
     requestId: string,
     options: PollVideoPredictionStatusOptions = {},
 ): Promise<NormalizedRemoteResult> {
-    const maxTimeoutMs = options.maxTimeoutMs || DEFAULT_MAX_TIMEOUT_MS;
-    const initialDelayMs = options.initialDelayMs || DEFAULT_INITIAL_DELAY_MS;
-    const maxDelayMs = options.maxDelayMs || DEFAULT_MAX_DELAY_MS;
+    const {
+        maxTimeoutMs,
+        initialDelayMs = DEFAULT_INITIAL_DELAY_MS,
+        maxDelayMs = DEFAULT_MAX_DELAY_MS,
+    } = options;
 
     const statusURL = `/api/jobs/${jobId}/video/predictions/${encodeURIComponent(requestId)}`;
-    const deadline = Date.now() + maxTimeoutMs;
+    const deadline = Number.isFinite(maxTimeoutMs) && Number(maxTimeoutMs) > 0 ?
+        Date.now() + Number(maxTimeoutMs) : null;
     let delay = initialDelayMs;
 
-    while (Date.now() < deadline) {
+    let shouldPoll = deadline === null || Date.now() < deadline;
+    while (shouldPoll) {
         const response = await fetch(statusURL, {
             method: 'GET',
             credentials: 'same-origin',
@@ -361,11 +364,12 @@ export async function pollVideoPredictionStatus(
 
         await sleep(delay, options.signal);
         delay = Math.min(delay * 2, maxDelayMs);
+        shouldPoll = deadline === null || Date.now() < deadline;
     }
 
     return {
         state: 'failed',
         request_id: requestId,
-        error: `Timed out after ${maxTimeoutMs}ms while polling remote job status`,
+        error: `Timed out after ${Number(maxTimeoutMs)}ms while polling remote job status`,
     };
 }

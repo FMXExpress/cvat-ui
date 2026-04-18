@@ -380,6 +380,7 @@ export default function SAMRemoteRunner(
                         },
                     });
 
+                    // Intentionally omit maxTimeoutMs: UI polling is unbounded unless user cancels.
                     const result = await pollVideoPredictionStatus(jobInstance.id, submitResult.request_id, {
                         signal: abortController.signal,
                     });
