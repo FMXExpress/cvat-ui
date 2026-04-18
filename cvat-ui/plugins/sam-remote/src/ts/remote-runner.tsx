@@ -24,6 +24,7 @@ import {
     mintVideoAccess,
     NormalizedRemoteResult,
     pollVideoPredictionStatus,
+    RemoteRequestError,
     submitVideoPrediction,
 } from './remote-client';
 import { adaptKeyframesPayload } from './keyframe-adapter';
@@ -151,6 +152,50 @@ function saveLastValues(key: string | null, values: RemoteRunnerValues): void {
     window.localStorage.setItem(key, JSON.stringify(values));
 }
 
+function mapHttpError(stage: 'submit' | 'status' | 'access', status: number): string | null {
+    if (stage === 'submit' && status === 400) {
+        return 'Unable to submit remote job: request payload is invalid (HTTP 400).';
+    }
+    if (stage === 'submit' && status === 502) {
+        return 'Unable to submit remote job: remote service is unavailable (HTTP 502).';
+    }
+    if (stage === 'status' && status === 400) {
+        return 'Unable to read remote job status: invalid request identifier (HTTP 400).';
+    }
+    if (stage === 'status' && status === 403) {
+        return 'Unable to read remote job status: access denied (HTTP 403).';
+    }
+    if (stage === 'access' && status === 400) {
+        return 'Unable to mint video access URL: request is invalid (HTTP 400).';
+    }
+    if (stage === 'access' && status === 422) {
+        return 'Unable to mint video access URL: server could not process this job request (HTTP 422).';
+    }
+
+    return null;
+}
+
+function summarizeWebhookPayload(payload: unknown): string | null {
+    if (payload === undefined || payload === null) {
+        return null;
+    }
+
+    try {
+        const text = JSON.stringify(payload);
+        if (!text) {
+            return null;
+        }
+
+        return text.length > 240 ? `${text.slice(0, 240)}...` : text;
+    } catch {
+        return null;
+    }
+}
+
+function requestIdDetails(requestId?: string): string {
+    return requestId?.trim() ? `Request ID: ${requestId.trim()}` : 'Request ID: unavailable';
+}
+
 export default function SAMRemoteRunner(
     { targetProps = {}, onChangeFrame, pluginConfig = {} }: InteractorExtraProps & {
         onChangeFrame: (frame: number) => void;
@@ -187,6 +232,7 @@ export default function SAMRemoteRunner(
         abortControllerRef.current?.abort();
         abortControllerRef.current = null;
         setLoading(false);
+        message.info('Stopped UI polling. Remote processing may still continue on the backend.');
     };
 
     const fallbackJobBounds = useMemo(() => {
@@ -400,18 +446,55 @@ export default function SAMRemoteRunner(
                         }
 
                         message.success('Video processing request completed successfully');
-                    } else {
-                        throw new Error(result.error || 'Remote SAM job failed');
+                        notification.success({
+                            message: 'Remote job completed',
+                            description: requestIdDetails(result.request_id || submitResult.request_id),
+                        });
+                    } else if (result.state === 'failed') {
+                        const statusMessage = result.http_status ?
+                            mapHttpError('status', result.http_status) : null;
+                        const webhookSummary = summarizeWebhookPayload(result.webhook_payload);
+                        const details = [
+                            statusMessage || result.error || 'Remote SAM job failed.',
+                            webhookSummary ? `Webhook payload: ${webhookSummary}` : null,
+                            requestIdDetails(result.request_id || submitResult.request_id),
+                        ].filter(Boolean).join('\n');
+
+                        notification.error({
+                            message: 'Remote job failed',
+                            description: details,
+                        });
+                    } else if (result.state === 'expired') {
+                        const details = [
+                            result.error || 'Remote job expired before completion.',
+                            'Please resubmit the job to start a new remote run.',
+                            requestIdDetails(result.request_id || submitResult.request_id),
+                        ].join('\n');
+
+                        notification.warning({
+                            message: 'Remote job expired',
+                            description: details,
+                        });
                     }
                 } catch (error: unknown) {
                     const isAbort = error instanceof DOMException && error.name === 'AbortError';
                     if (isAbort) {
-                        message.info('Video processing request canceled');
+                        // User-facing cancellation message is handled in cancelRequest().
+                    } else if (error instanceof RemoteRequestError) {
+                        const statusMessage = mapHttpError(error.stage, error.status);
+                        const details = [
+                            statusMessage || error.detail || error.message,
+                            requestIdDetails(error.requestId),
+                        ].filter(Boolean).join('\n');
+                        notification.error({
+                            message: `Failed to ${error.stage === 'access' ? 'mint video access' : 'submit remote job'}`,
+                            description: details,
+                        });
                     } else {
                         const description = error instanceof Error ? error.message : 'Could not process remote SAM request';
                         notification.error({
                             message: 'Failed to process video',
-                            description,
+                            description: `${description}\n${requestIdDetails()}`,
                         });
                     }
                 } finally {
