@@ -133,6 +133,57 @@ function toNumberArray(value: unknown): number[] | undefined {
     return normalized.length ? normalized : undefined;
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+    return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+function getNestedRecord(
+    source: Record<string, unknown>,
+    path: string[],
+): Record<string, unknown> | undefined {
+    let cursor: unknown = source;
+    for (const key of path) {
+        if (!isRecord(cursor) || !(key in cursor)) {
+            return undefined;
+        }
+        cursor = cursor[key];
+    }
+
+    return isRecord(cursor) ? cursor : undefined;
+}
+
+function getFirstNumberArray(
+    sources: Record<string, unknown>[],
+    keys: string[],
+): number[] | undefined {
+    for (const source of sources) {
+        for (const key of keys) {
+            const parsed = toNumberArray(source[key]);
+            if (parsed) {
+                return parsed;
+            }
+        }
+    }
+
+    return undefined;
+}
+
+function getFirstFiniteNumber(
+    sources: Record<string, unknown>[],
+    keys: string[],
+): number | undefined {
+    for (const source of sources) {
+        for (const key of keys) {
+            const parsed = Number(source[key]);
+            if (Number.isFinite(parsed)) {
+                return parsed;
+            }
+        }
+    }
+
+    return undefined;
+}
+
 function extractDetailMessage(payload: Record<string, unknown>): string | undefined {
     const { detail } = payload;
     if (typeof detail === 'string' && detail.trim()) {
@@ -171,9 +222,14 @@ function extractDetailMessage(payload: Record<string, unknown>): string | undefi
 
 function normalizeResponse(payload: Record<string, unknown>): NormalizedRemoteResult {
     const error = extractDetailMessage(payload) || payload.error || payload.message;
-    const selected = toNumberArray(payload.selected_indices || payload.selectedIndices || payload.selectedFrames);
-    const candidate = toNumberArray(payload.candidate_indices || payload.candidateIndices || payload.candidateFrames);
-    const nTotalFrames = Number(payload.n_total_frames || payload.nTotalFrames || payload.totalFrames);
+    const keyframes = getNestedRecord(payload, ['keyframes']);
+    const webhookPayload = getNestedRecord(payload, ['webhook_payload']) || getNestedRecord(payload, ['webhookPayload']);
+    const webhookOutput = webhookPayload ? getNestedRecord(webhookPayload, ['output']) : undefined;
+    const valueSources = [payload, keyframes, webhookOutput].filter(isRecord);
+
+    const selected = getFirstNumberArray(valueSources, ['selected_indices', 'selectedIndices', 'selectedFrames']);
+    const candidate = getFirstNumberArray(valueSources, ['candidate_indices', 'candidateIndices', 'candidateFrames']);
+    const nTotalFrames = getFirstFiniteNumber(valueSources, ['n_total_frames', 'nTotalFrames', 'totalFrames']);
 
     return {
         state: normalizeState(payload.state || payload.status),
@@ -182,11 +238,15 @@ function normalizeResponse(payload: Record<string, unknown>): NormalizedRemoteRe
         request_id: typeof payload.request_id === 'string' ? payload.request_id : undefined,
         selected_indices: selected,
         candidate_indices: candidate,
-        n_total_frames: Number.isFinite(nTotalFrames) ? nTotalFrames : undefined,
+        n_total_frames: nTotalFrames,
         keyframes: payload.keyframes,
         webhook_payload: payload.webhook_payload || payload.webhookPayload,
     };
 }
+
+export const __internal__ = {
+    normalizeResponse,
+};
 
 async function parseJSONResponse(response: Response): Promise<Record<string, unknown>> {
     const contentType = response.headers.get('content-type') || '';
