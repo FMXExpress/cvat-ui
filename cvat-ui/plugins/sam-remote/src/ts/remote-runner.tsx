@@ -288,6 +288,28 @@ export default function SAMRemoteRunner(
         return filteredSelectedIndices.some((index: number): boolean => index < frame);
     }, [filteredSelectedIndices, frame]);
 
+    const selectedIndicesCSV = useMemo((): string => (
+        (remoteResult?.selected_indices || []).join(',')
+    ), [remoteResult?.selected_indices]);
+
+    const candidateIndicesCSV = useMemo((): string => (
+        (remoteResult?.candidate_indices || []).join(',')
+    ), [remoteResult?.candidate_indices]);
+
+    const copyIndicesCSV = async (value: string, label: string): Promise<void> => {
+        if (!value) {
+            message.info(`${label}: no indices returned.`);
+            return;
+        }
+
+        try {
+            await navigator.clipboard.writeText(value);
+            message.success(`${label} copied to clipboard`);
+        } catch {
+            message.error(`Failed to copy ${label}`);
+        }
+    };
+
     const navigateToIndex = (index: number): void => {
         onChangeFrame(index);
         setSelectedFrame(index);
@@ -628,6 +650,38 @@ n_total_frames:
                             {remoteResult.n_total_frames ?? 'N/A'}
                         </div>
                     </div>
+                    <Form.Item label='selected_indices (CSV)' style={{ marginBottom: 8 }}>
+                        <Input.TextArea
+                            readOnly
+                            allowClear
+                            autoSize={{ minRows: 2, maxRows: 4 }}
+                            value={selectedIndicesCSV}
+                        />
+                        <Space style={{ marginTop: 4 }}>
+                            <Button size='small' onClick={(): void => { void copyIndicesCSV(selectedIndicesCSV, 'selected_indices'); }}>
+                                Copy
+                            </Button>
+                            {!selectedIndicesCSV && (
+                                <span style={{ color: 'rgba(0, 0, 0, 0.45)' }}>No indices returned</span>
+                            )}
+                        </Space>
+                    </Form.Item>
+                    <Form.Item label='candidate_indices (CSV)' style={{ marginBottom: 8 }}>
+                        <Input.TextArea
+                            readOnly
+                            allowClear
+                            autoSize={{ minRows: 2, maxRows: 4 }}
+                            value={candidateIndicesCSV}
+                        />
+                        <Space style={{ marginTop: 4 }}>
+                            <Button size='small' onClick={(): void => { void copyIndicesCSV(candidateIndicesCSV, 'candidate_indices'); }}>
+                                Copy
+                            </Button>
+                            {!candidateIndicesCSV && (
+                                <span style={{ color: 'rgba(0, 0, 0, 0.45)' }}>No indices returned</span>
+                            )}
+                        </Space>
+                    </Form.Item>
                     <Space.Compact block style={{ marginBottom: 8 }}>
                         <Button
                             onClick={navigateToPreviousSelected}
