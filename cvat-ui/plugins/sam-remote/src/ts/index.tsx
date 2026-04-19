@@ -94,9 +94,20 @@ function makeSAMRemoteTopBarAction(
                 <Button
                     type='link'
                     className='cvat-annotation-header-button'
-                    aria-label='SAM Remote'
+                    aria-label='SAM Remote: Get keyframes'
+                    title='SAM Remote: Get keyframes from video'
+                    style={{
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        gap: 4,
+                        fontWeight: 600,
+                        whiteSpace: 'nowrap',
+                    }}
                 >
-                    🎬
+                    <span style={{ fontSize: '1.05em', lineHeight: 1 }} aria-hidden>
+                        🎬
+                    </span>
+                    <span>Get KF</span>
                 </Button>
             </Dropdown>
         );
