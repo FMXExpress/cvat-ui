@@ -6,6 +6,7 @@ import React, {
     useCallback,
     useEffect,
     useMemo,
+    useRef,
     useState,
 } from 'react';
 import Alert from 'antd/lib/alert';
@@ -40,12 +41,20 @@ function DispatchHealthSection({ health }: DispatchHealthSectionProps): JSX.Elem
         return <Typography.Text type='secondary'>No dispatch health data loaded yet.</Typography.Text>;
     }
 
+    const normalizedStatus = (health.status || 'unknown').toLowerCase();
+    let healthTagColor = 'orange';
+    if (normalizedStatus === 'ok') {
+        healthTagColor = 'green';
+    } else if (normalizedStatus === 'degraded') {
+        healthTagColor = 'red';
+    }
+
     return (
         <Space direction='vertical' size={4} style={{ width: '100%' }}>
             <Typography.Text>
                 Status:
                 {' '}
-                <Tag color={health.status === 'ok' ? 'green' : 'orange'}>{health.status || 'unknown'}</Tag>
+                <Tag color={healthTagColor}>{health.status || 'unknown'}</Tag>
             </Typography.Text>
             <Typography.Text>
                 Redis connectivity:
@@ -70,12 +79,46 @@ function DispatchHealthSection({ health }: DispatchHealthSectionProps): JSX.Elem
 
 interface GlobalQueueStatusSectionProps {
     status: PredictionDispatchStatus | null;
+    stale: boolean;
+    disableETAConfidence: boolean;
 }
 
-function GlobalQueueStatusSection({ status }: GlobalQueueStatusSectionProps): JSX.Element {
-    const pathways = useMemo(() => Object.entries(status?.pathways || {}), [status]);
+function disableETAConfidenceIndicators(value: unknown): unknown {
+    if (Array.isArray(value)) {
+        return value.map((item: unknown) => disableETAConfidenceIndicators(item));
+    }
 
-    if (!pathways.length) {
+    if (!value || typeof value !== 'object') {
+        return value;
+    }
+
+    return Object.entries(value as Record<string, unknown>).reduce<Record<string, unknown>>(
+        (acc, [key, nestedValue]) => {
+            if (/eta[_\s-]*confidence|confidence[_\s-]*eta/i.test(key)) {
+                acc[key] = 'disabled while dispatch is degraded';
+                return acc;
+            }
+            acc[key] = disableETAConfidenceIndicators(nestedValue);
+            return acc;
+        },
+        {},
+    );
+}
+
+function GlobalQueueStatusSection({
+    status,
+    stale,
+    disableETAConfidence,
+}: GlobalQueueStatusSectionProps): JSX.Element {
+    const pathways = useMemo(() => Object.entries(status?.pathways || {}), [status]);
+    const pathwaysToRender = useMemo(
+        () => pathways.map(([name, value]: [string, unknown]) => (
+            [name, disableETAConfidence ? disableETAConfidenceIndicators(value) : value] as [string, unknown]
+        )),
+        [pathways, disableETAConfidence],
+    );
+
+    if (!pathwaysToRender.length) {
         return <Typography.Text type='secondary'>No global queue pathways reported by backend.</Typography.Text>;
     }
 
@@ -83,11 +126,14 @@ function GlobalQueueStatusSection({ status }: GlobalQueueStatusSectionProps): JS
         <List
             size='small'
             bordered
-            dataSource={pathways}
+            dataSource={pathwaysToRender}
             renderItem={([pathwayName, pathwayValue]: [string, unknown]) => (
                 <List.Item>
                     <Space direction='vertical' size={2} style={{ width: '100%' }}>
-                        <Typography.Text strong>{pathwayName}</Typography.Text>
+                        <Space size={6} wrap>
+                            <Typography.Text strong>{pathwayName}</Typography.Text>
+                            {stale ? <Tag color='gold'>stale</Tag> : null}
+                        </Space>
                         <Typography.Text code style={{ whiteSpace: 'pre-wrap' }}>
                             {JSON.stringify(pathwayValue, null, 2)}
                         </Typography.Text>
@@ -149,14 +195,31 @@ export default function SAMRemoteObservabilityTab(
 ): JSX.Element {
     const [dispatchHealth, setDispatchHealth] = useState<PredictionDispatchHealth | null>(null);
     const [dispatchStatus, setDispatchStatus] = useState<PredictionDispatchStatus | null>(null);
+    const [lastFreshDispatchStatus, setLastFreshDispatchStatus] = useState<PredictionDispatchStatus | null>(null);
     const [jobRequests, setJobRequests] = useState<JobPredictionRequest[]>([]);
     const [error, setError] = useState<string | null>(null);
     const [loading, setLoading] = useState(false);
+    const pollingTimerRef = useRef<number | null>(null);
+    const intervalMs = 15000;
+
+    const isDispatchDegraded = useMemo(
+        () => dispatchHealth?.status?.toLowerCase() === 'degraded',
+        [dispatchHealth],
+    );
+
+    const displayedDispatchStatus = useMemo(() => {
+        if (isDispatchDegraded) {
+            return lastFreshDispatchStatus || dispatchStatus;
+        }
+
+        return dispatchStatus;
+    }, [dispatchStatus, isDispatchDegraded, lastFreshDispatchStatus]);
 
     const loadObservability = useCallback(async (): Promise<void> => {
         if (!jobId) {
             setDispatchHealth(null);
             setDispatchStatus(null);
+            setLastFreshDispatchStatus(null);
             setJobRequests([]);
             setError('Task/job context is unavailable on the current page.');
             return;
@@ -172,6 +235,9 @@ export default function SAMRemoteObservabilityTab(
             ]);
             setDispatchHealth(health);
             setDispatchStatus(status);
+            if (health.status.toLowerCase() === 'ok') {
+                setLastFreshDispatchStatus(status);
+            }
             setJobRequests(requests);
         } catch (fetchError: unknown) {
             setError(fetchError instanceof Error ? fetchError.message : 'Failed to load observability data.');
@@ -184,6 +250,21 @@ export default function SAMRemoteObservabilityTab(
         loadObservability().catch(() => {
             // Error handling is already managed in loadObservability.
         });
+        if (pollingTimerRef.current !== null) {
+            window.clearInterval(pollingTimerRef.current);
+        }
+        pollingTimerRef.current = window.setInterval(() => {
+            loadObservability().catch(() => {
+                // Error handling is already managed in loadObservability.
+            });
+        }, intervalMs);
+
+        return () => {
+            if (pollingTimerRef.current !== null) {
+                window.clearInterval(pollingTimerRef.current);
+                pollingTimerRef.current = null;
+            }
+        };
     }, [loadObservability]);
 
     return (
@@ -209,6 +290,14 @@ export default function SAMRemoteObservabilityTab(
                         description={error}
                     />
                 ) : null}
+                {isDispatchDegraded ? (
+                    <Alert
+                        type='error'
+                        showIcon
+                        message='prediction dispatch unavailable'
+                        description='Showing last-known queue snapshot as stale. ETA confidence indicators are disabled until dispatch health recovers.'
+                    />
+                ) : null}
 
                 <div>
                     <Typography.Text strong>Dispatch Health</Typography.Text>
@@ -219,7 +308,11 @@ export default function SAMRemoteObservabilityTab(
                 <div>
                     <Typography.Text strong>Global Queue Status</Typography.Text>
                     <Divider style={{ margin: '8px 0' }} />
-                    <GlobalQueueStatusSection status={dispatchStatus} />
+                    <GlobalQueueStatusSection
+                        status={displayedDispatchStatus}
+                        stale={isDispatchDegraded}
+                        disableETAConfidence={isDispatchDegraded}
+                    />
                 </div>
 
                 <div>
