@@ -16,6 +16,7 @@ import Select from 'antd/lib/select';
 import Switch from 'antd/lib/switch';
 import Space from 'antd/lib/space';
 import Collapse from 'antd/lib/collapse';
+import Tabs from 'antd/lib/tabs';
 import message from 'antd/lib/message';
 import notification from 'antd/lib/notification';
 import Alert from 'antd/lib/alert';
@@ -28,6 +29,7 @@ import {
     submitVideoPrediction,
 } from './remote-client';
 import { adaptKeyframesPayload } from './keyframe-adapter';
+import SAMRemoteObservabilityTab from './remote-observability-tab';
 
 interface InteractorPluginTargetProps {
     jobInstance?: Job;
@@ -208,6 +210,7 @@ export default function SAMRemoteRunner(
     const [validationBounds, setValidationBounds] = useState<{ start: number; stop: number } | null>(null);
     const [remoteResult, setRemoteResult] = useState<NormalizedRemoteResult | null>(null);
     const [selectedFrame, setSelectedFrame] = useState<number | null>(null);
+    const [activeTab, setActiveTab] = useState<'prediction' | 'observability'>('prediction');
     const abortControllerRef = useRef<AbortController | null>(null);
 
     const runnerStorageKey = useMemo(() => storageKey(jobInstance), [jobInstance?.id, jobInstance?.taskId]);
@@ -538,191 +541,230 @@ export default function SAMRemoteRunner(
                     description={`Missing required plugin configuration: ${missingConfigFields.join(', ')}.`}
                 />
             )}
-            <Form.Item
-                label='Remote prediction URL'
-                name='remoteURL'
-                style={{ marginBottom: 8 }}
-                extra='CVAT sends the request to this URL and handles callback/webhook updates for the job.'
-                rules={[{ validator: validateRemoteURL }]}
-            >
-                <Input placeholder='https://server.example/predict or /api/lambda/functions/sam-remote' />
-            </Form.Item>
-            <Form.Item
-                label='stride'
-                name='stride'
-                style={{ marginBottom: 8 }}
-                rules={[
-                    {
-                        required: true,
-                        type: 'number',
-                        min: 1,
-                        message: 'Stride must be >= 1',
-                    },
-                ]}
-            >
-                <InputNumber min={1} precision={0} style={{ width: '100%' }} />
-            </Form.Item>
-            <Form.Item
-                label='n_clusters'
-                name='nClusters'
-                style={{ marginBottom: 8 }}
-                rules={[
-                    {
-                        required: true,
-                        type: 'number',
-                        min: 1,
-                        message: 'n_clusters must be >= 1',
-                    },
-                ]}
-            >
-                <InputNumber min={1} precision={0} style={{ width: '100%' }} />
-            </Form.Item>
-            <Form.Item
-                label='budget'
-                name='budget'
-                style={{ marginBottom: 8 }}
-                rules={[
-                    {
-                        required: true,
-                        type: 'number',
-                        min: 1,
-                        message: 'Budget must be >= 1',
-                    },
-                ]}
-            >
-                <InputNumber min={1} precision={0} style={{ width: '100%' }} />
-            </Form.Item>
-            <Form.Item
-                label='include_first'
-                name='includeFirst'
-                valuePropName='checked'
-                style={{ marginBottom: 8 }}
-            >
-                <Switch />
-            </Form.Item>
-            <Collapse
-                size='small'
-                style={{ marginBottom: 12 }}
+            <Tabs
+                activeKey={activeTab}
+                onChange={(activeKey: string): void => setActiveTab(activeKey as 'prediction' | 'observability')}
+                destroyInactiveTabPane={false}
                 items={[
                     {
-                        key: 'advanced',
-                        label: 'Advanced',
+                        key: 'prediction',
+                        label: 'Prediction',
                         children: (
-                            <Form.Item
-                                label='Debug override: source video URL or data URI (optional)'
-                                name='debugVideoURL'
-                                style={{ marginBottom: 0 }}
-                                rules={[{ validator: validateVideoReference }]}
-                            >
-                                <Input.TextArea
-                                    autoSize={{ minRows: 2, maxRows: 6 }}
-                                    placeholder='https://storage.example/video.mp4 or data:video/mp4;base64,...'
+                            <>
+                                <Form.Item
+                                    label='Remote prediction URL'
+                                    name='remoteURL'
+                                    style={{ marginBottom: 8 }}
+                                    extra='CVAT sends the request to this URL and handles callback/webhook updates for the job.'
+                                    rules={[{ validator: validateRemoteURL }]}
+                                >
+                                    <Input placeholder='https://server.example/predict or /api/lambda/functions/sam-remote' />
+                                </Form.Item>
+                                <Form.Item
+                                    label='stride'
+                                    name='stride'
+                                    style={{ marginBottom: 8 }}
+                                    rules={[
+                                        {
+                                            required: true,
+                                            type: 'number',
+                                            min: 1,
+                                            message: 'Stride must be >= 1',
+                                        },
+                                    ]}
+                                >
+                                    <InputNumber min={1} precision={0} style={{ width: '100%' }} />
+                                </Form.Item>
+                                <Form.Item
+                                    label='n_clusters'
+                                    name='nClusters'
+                                    style={{ marginBottom: 8 }}
+                                    rules={[
+                                        {
+                                            required: true,
+                                            type: 'number',
+                                            min: 1,
+                                            message: 'n_clusters must be >= 1',
+                                        },
+                                    ]}
+                                >
+                                    <InputNumber min={1} precision={0} style={{ width: '100%' }} />
+                                </Form.Item>
+                                <Form.Item
+                                    label='budget'
+                                    name='budget'
+                                    style={{ marginBottom: 8 }}
+                                    rules={[
+                                        {
+                                            required: true,
+                                            type: 'number',
+                                            min: 1,
+                                            message: 'Budget must be >= 1',
+                                        },
+                                    ]}
+                                >
+                                    <InputNumber min={1} precision={0} style={{ width: '100%' }} />
+                                </Form.Item>
+                                <Form.Item
+                                    label='include_first'
+                                    name='includeFirst'
+                                    valuePropName='checked'
+                                    style={{ marginBottom: 8 }}
+                                >
+                                    <Switch />
+                                </Form.Item>
+                                <Collapse
+                                    size='small'
+                                    style={{ marginBottom: 12 }}
+                                    items={[
+                                        {
+                                            key: 'advanced',
+                                            label: 'Advanced',
+                                            children: (
+                                                <Form.Item
+                                                    label='Debug override: source video URL or data URI (optional)'
+                                                    name='debugVideoURL'
+                                                    style={{ marginBottom: 0 }}
+                                                    rules={[{ validator: validateVideoReference }]}
+                                                >
+                                                    <Input.TextArea
+                                                        autoSize={{ minRows: 2, maxRows: 6 }}
+                                                        placeholder='https://storage.example/video.mp4 or data:video/mp4;base64,...'
+                                                    />
+                                                </Form.Item>
+                                            ),
+                                        },
+                                    ]}
                                 />
-                            </Form.Item>
+
+                                <Space.Compact block>
+                                    <Button type='primary' htmlType='submit' loading={loading} disabled={loading} style={{ width: '100%' }}>
+                                        Process video
+                                    </Button>
+                                    <Button danger onClick={cancelRequest} disabled={!loading}>
+                                        Cancel
+                                    </Button>
+                                </Space.Compact>
+
+                                {!!remoteResult && (
+                                    <div style={{ marginTop: 12 }}>
+                                        <div style={{ marginBottom: 8 }}>
+                                            <strong>Remote result summary</strong>
+                                            <div>
+                                                selected_indices:
+                                                {remoteResult.selected_indices?.length || 0}
+                                            </div>
+                                            <div>
+                                                candidate_indices:
+                                                {remoteResult.candidate_indices?.length || 0}
+                                            </div>
+                                            <div>
+                                                n_total_frames:
+                                                {remoteResult.n_total_frames ?? 'N/A'}
+                                            </div>
+                                        </div>
+                                        <Form.Item label='selected_indices (CSV)' style={{ marginBottom: 8 }}>
+                                            <Input.TextArea
+                                                readOnly
+                                                allowClear
+                                                autoSize={{ minRows: 2, maxRows: 4 }}
+                                                value={selectedIndicesCSV}
+                                            />
+                                            <Space style={{ marginTop: 4 }}>
+                                                <Button
+                                                    size='small'
+                                                    onClick={(): void => {
+                                                        copyIndicesCSV(selectedIndicesCSV, 'selected_indices').catch(() => {
+                                                            // Error handling is already managed in copyIndicesCSV.
+                                                        });
+                                                    }}
+                                                >
+                                                    Copy
+                                                </Button>
+                                                {!selectedIndicesCSV && (
+                                                    <span style={{ color: 'rgba(0, 0, 0, 0.45)' }}>No indices returned</span>
+                                                )}
+                                            </Space>
+                                        </Form.Item>
+                                        <Form.Item label='candidate_indices (CSV)' style={{ marginBottom: 8 }}>
+                                            <Input.TextArea
+                                                readOnly
+                                                allowClear
+                                                autoSize={{ minRows: 2, maxRows: 4 }}
+                                                value={candidateIndicesCSV}
+                                            />
+                                            <Space style={{ marginTop: 4 }}>
+                                                <Button
+                                                    size='small'
+                                                    onClick={(): void => {
+                                                        copyIndicesCSV(candidateIndicesCSV, 'candidate_indices').catch(() => {
+                                                            // Error handling is already managed in copyIndicesCSV.
+                                                        });
+                                                    }}
+                                                >
+                                                    Copy
+                                                </Button>
+                                                {!candidateIndicesCSV && (
+                                                    <span style={{ color: 'rgba(0, 0, 0, 0.45)' }}>No indices returned</span>
+                                                )}
+                                            </Space>
+                                        </Form.Item>
+                                        <Space.Compact block style={{ marginBottom: 8 }}>
+                                            <Button
+                                                onClick={navigateToPreviousSelected}
+                                                disabled={!filteredSelectedIndices.length || !hasPreviousSelectedFrame}
+                                            >
+                                                Go to previous selected frame
+                                            </Button>
+                                            <Button
+                                                onClick={navigateToNextSelected}
+                                                disabled={!filteredSelectedIndices.length || !hasNextSelectedFrame}
+                                            >
+                                                Go to next selected frame
+                                            </Button>
+                                        </Space.Compact>
+                                        <Select<number>
+                                            placeholder='Jump to selected frame list'
+                                            style={{ width: '100%', marginBottom: 8 }}
+                                            value={selectedFrame ?? undefined}
+                                            onChange={(value: number): void => navigateToIndex(value)}
+                                            options={filteredSelectedIndices.map((index: number) => ({
+                                                value: index,
+                                                label: `Frame ${index}`,
+                                            }))}
+                                        />
+                                        <div style={{
+                                            maxHeight: 160, overflowY: 'auto', border: '1px solid #f0f0f0', padding: 8,
+                                        }}
+                                        >
+                                            {filteredSelectedIndices.map((index: number) => (
+                                                <Button
+                                                    key={`selected-frame-${index}`}
+                                                    size='small'
+                                                    style={{ margin: '0 8px 8px 0' }}
+                                                    onClick={(): void => navigateToIndex(index)}
+                                                >
+                                                    {index}
+                                                </Button>
+                                            ))}
+                                        </div>
+                                    </div>
+                                )}
+                            </>
+                        ),
+                    },
+                    {
+                        key: 'observability',
+                        label: 'Observability',
+                        children: (
+                            <SAMRemoteObservabilityTab
+                                jobId={jobInstance?.id}
+                                remoteResult={remoteResult}
+                            />
                         ),
                     },
                 ]}
             />
-
-            <Space.Compact block>
-                <Button type='primary' htmlType='submit' loading={loading} disabled={loading} style={{ width: '100%' }}>
-                    Process video
-                </Button>
-                <Button danger onClick={cancelRequest} disabled={!loading}>
-                    Cancel
-                </Button>
-            </Space.Compact>
-
-            {!!remoteResult && (
-                <div style={{ marginTop: 12 }}>
-                    <div style={{ marginBottom: 8 }}>
-                        <strong>Remote result summary</strong>
-                        <div>
-selected_indices:
-                            {remoteResult.selected_indices?.length || 0}
-                        </div>
-                        <div>
-candidate_indices:
-                            {remoteResult.candidate_indices?.length || 0}
-                        </div>
-                        <div>
-n_total_frames:
-                            {remoteResult.n_total_frames ?? 'N/A'}
-                        </div>
-                    </div>
-                    <Form.Item label='selected_indices (CSV)' style={{ marginBottom: 8 }}>
-                        <Input.TextArea
-                            readOnly
-                            allowClear
-                            autoSize={{ minRows: 2, maxRows: 4 }}
-                            value={selectedIndicesCSV}
-                        />
-                        <Space style={{ marginTop: 4 }}>
-                            <Button size='small' onClick={(): void => { void copyIndicesCSV(selectedIndicesCSV, 'selected_indices'); }}>
-                                Copy
-                            </Button>
-                            {!selectedIndicesCSV && (
-                                <span style={{ color: 'rgba(0, 0, 0, 0.45)' }}>No indices returned</span>
-                            )}
-                        </Space>
-                    </Form.Item>
-                    <Form.Item label='candidate_indices (CSV)' style={{ marginBottom: 8 }}>
-                        <Input.TextArea
-                            readOnly
-                            allowClear
-                            autoSize={{ minRows: 2, maxRows: 4 }}
-                            value={candidateIndicesCSV}
-                        />
-                        <Space style={{ marginTop: 4 }}>
-                            <Button size='small' onClick={(): void => { void copyIndicesCSV(candidateIndicesCSV, 'candidate_indices'); }}>
-                                Copy
-                            </Button>
-                            {!candidateIndicesCSV && (
-                                <span style={{ color: 'rgba(0, 0, 0, 0.45)' }}>No indices returned</span>
-                            )}
-                        </Space>
-                    </Form.Item>
-                    <Space.Compact block style={{ marginBottom: 8 }}>
-                        <Button
-                            onClick={navigateToPreviousSelected}
-                            disabled={!filteredSelectedIndices.length || !hasPreviousSelectedFrame}
-                        >
-                            Go to previous selected frame
-                        </Button>
-                        <Button
-                            onClick={navigateToNextSelected}
-                            disabled={!filteredSelectedIndices.length || !hasNextSelectedFrame}
-                        >
-                            Go to next selected frame
-                        </Button>
-                    </Space.Compact>
-                    <Select<number>
-                        placeholder='Jump to selected frame list'
-                        style={{ width: '100%', marginBottom: 8 }}
-                        value={selectedFrame ?? undefined}
-                        onChange={(value: number): void => navigateToIndex(value)}
-                        options={filteredSelectedIndices.map((index: number) => ({
-                            value: index,
-                            label: `Frame ${index}`,
-                        }))}
-                    />
-                    <div style={{
-                        maxHeight: 160, overflowY: 'auto', border: '1px solid #f0f0f0', padding: 8,
-                    }}
-                    >
-                        {filteredSelectedIndices.map((index: number) => (
-                            <Button
-                                key={`selected-frame-${index}`}
-                                size='small'
-                                style={{ margin: '0 8px 8px 0' }}
-                                onClick={(): void => navigateToIndex(index)}
-                            >
-                                {index}
-                            </Button>
-                        ))}
-                    </div>
-                </div>
-            )}
         </Form>
     );
 }
