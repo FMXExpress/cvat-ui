@@ -85,13 +85,34 @@ export function testNormalizeJobPredictionRequestWithNullableFields(): void {
     const result = __internal__.normalizeJobPredictionRequest({
         request_id: 'rq-1',
         state: 'running',
+        pathway: 'gpu',
+        created_at: '2026-04-21T00:00:00Z',
+        updated_at: '2026-04-21T00:01:00Z',
         remote_prediction_id: null,
         details: null,
         error: null,
     });
 
     assertEqual(result.state, 'pending', 'Running state should map to pending');
+    assertEqual(result.pathway, 'gpu', 'pathway should be normalized');
+    assertEqual(result.created_at, '2026-04-21T00:00:00Z', 'created_at should be normalized');
+    assertEqual(result.updated_at, '2026-04-21T00:01:00Z', 'updated_at should be normalized');
     assertEqual(result.remote_prediction_id, null, 'remote_prediction_id should keep null values');
     assertEqual(result.details, null, 'details should keep null values');
     assertEqual(result.error, null, 'error should keep null values');
+}
+
+export function testNormalizeJobPredictionRequestWithObjectError(): void {
+    const result = __internal__.normalizeJobPredictionRequest({
+        request_id: 'rq-2',
+        state: 'failed',
+        error: {
+            detail: [{ msg: 'remote timeout' }],
+        },
+        details: {
+            request_context: 'demo',
+        },
+    });
+
+    assertEqual(result.error, 'remote timeout', 'object error payload should be converted to readable message');
 }

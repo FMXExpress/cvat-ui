@@ -13,6 +13,7 @@ import Alert from 'antd/lib/alert';
 import Button from 'antd/lib/button';
 import Divider from 'antd/lib/divider';
 import List from 'antd/lib/list';
+import Table from 'antd/lib/table';
 import Space from 'antd/lib/space';
 import Spin from 'antd/lib/spin';
 import Tag from 'antd/lib/tag';
@@ -197,47 +198,134 @@ function GlobalQueueStatusSection({
 }
 
 interface PredictionRequestsSectionProps {
+    jobId?: number;
     requests: JobPredictionRequest[];
     highlightedRequestId?: string;
 }
 
-function PredictionRequestsSection({ requests, highlightedRequestId }: PredictionRequestsSectionProps): JSX.Element {
-    if (!requests.length) {
-        return <Typography.Text type='secondary'>No prediction requests found for this job.</Typography.Text>;
+const TERMINAL_REQUEST_STATES = new Set(['completed', 'failed', 'expired']);
+
+function renderTimestamp(value: string | null): string {
+    if (!value) {
+        return 'N/A';
     }
 
+    const parsed = new Date(value);
+    if (Number.isNaN(parsed.getTime())) {
+        return value;
+    }
+
+    return parsed.toLocaleString();
+}
+
+function PredictionRequestsSection(
+    { jobId, requests, highlightedRequestId }: PredictionRequestsSectionProps,
+): JSX.Element {
     return (
-        <List
+        <Table<JobPredictionRequest>
             size='small'
             bordered
+            rowKey='request_id'
             dataSource={requests}
-            renderItem={(request: JobPredictionRequest) => {
-                const isHighlighted = highlightedRequestId && request.request_id === highlightedRequestId;
-                let tagColor = 'blue';
-                if (request.state === 'completed') {
-                    tagColor = 'green';
-                } else if (request.state === 'failed') {
-                    tagColor = 'red';
-                }
-
-                return (
-                    <List.Item>
-                        <Space direction='vertical' size={2} style={{ width: '100%' }}>
-                            <Space wrap>
-                                <Typography.Text strong>{request.request_id}</Typography.Text>
-                                <Tag color={tagColor}>{request.state}</Tag>
-                                {isHighlighted ? <Tag color='gold'>Current</Tag> : null}
-                            </Space>
-                            <Typography.Text type='secondary'>
-                                Remote prediction ID:
-                                {' '}
-                                {request.remote_prediction_id || 'N/A'}
-                            </Typography.Text>
-                            {request.error ? <Typography.Text type='danger'>{request.error}</Typography.Text> : null}
+            pagination={false}
+            locale={{ emptyText: 'No prediction requests yet' }}
+            columns={[
+                {
+                    title: 'Request ID',
+                    dataIndex: 'request_id',
+                    key: 'request_id',
+                    render: (value: string, request: JobPredictionRequest): JSX.Element => (
+                        <Space size={6} wrap>
+                            <Typography.Text strong>{value || 'N/A'}</Typography.Text>
+                            {highlightedRequestId && request.request_id === highlightedRequestId ?
+                                <Tag color='gold'>Current</Tag> :
+                                null}
                         </Space>
-                    </List.Item>
-                );
-            }}
+                    ),
+                },
+                {
+                    title: 'State',
+                    dataIndex: 'state',
+                    key: 'state',
+                    render: (value: string): JSX.Element => {
+                        let tagColor = 'blue';
+                        if (value === 'completed') {
+                            tagColor = 'green';
+                        } else if (value === 'failed' || value === 'expired') {
+                            tagColor = 'red';
+                        }
+
+                        return <Tag color={tagColor}>{value}</Tag>;
+                    },
+                },
+                {
+                    title: 'Pathway',
+                    dataIndex: 'pathway',
+                    key: 'pathway',
+                    render: (value: string | null): string => value || 'N/A',
+                },
+                {
+                    title: 'Created',
+                    dataIndex: 'created_at',
+                    key: 'created_at',
+                    render: (value: string | null): string => renderTimestamp(value),
+                },
+                {
+                    title: 'Updated',
+                    dataIndex: 'updated_at',
+                    key: 'updated_at',
+                    render: (value: string | null): string => renderTimestamp(value),
+                },
+                {
+                    title: 'Remote prediction ID',
+                    dataIndex: 'remote_prediction_id',
+                    key: 'remote_prediction_id',
+                    render: (value: string | null): string => value || 'N/A',
+                },
+                {
+                    title: 'Error message',
+                    dataIndex: 'error',
+                    key: 'error',
+                    render: (value: string | null): JSX.Element => {
+                        if (value) {
+                            return <Typography.Text type='danger'>{value}</Typography.Text>;
+                        }
+
+                        return <Typography.Text type='secondary'>—</Typography.Text>;
+                    },
+                },
+                {
+                    title: 'Actions',
+                    key: 'actions',
+                    render: (_: unknown, request: JobPredictionRequest): JSX.Element => (
+                        <Space size={4} wrap>
+                            <Button
+                                size='small'
+                                onClick={(): void => {
+                                    navigator.clipboard.writeText(request.request_id).catch(() => {
+                                        // Browser clipboard API can be unavailable depending on page permissions.
+                                    });
+                                }}
+                            >
+                                Copy request_id
+                            </Button>
+                            {jobId ? (
+                                <Button
+                                    size='small'
+                                    onClick={(): void => {
+                                        const statusURL = `/api/jobs/${jobId}/video/predictions/${
+                                            encodeURIComponent(request.request_id)
+                                        }`;
+                                        window.open(statusURL, '_blank', 'noopener');
+                                    }}
+                                >
+                                    Open status endpoint
+                                </Button>
+                            ) : null}
+                        </Space>
+                    ),
+                },
+            ]}
         />
     );
 }
@@ -251,7 +339,10 @@ export default function SAMRemoteObservabilityTab(
     const [error, setError] = useState<string | null>(null);
     const [loading, setLoading] = useState(false);
     const pollingTimerRef = useRef<number | null>(null);
-    const intervalMs = 15000;
+    const hasPendingRequests = useMemo(
+        () => jobRequests.some((request: JobPredictionRequest) => !TERMINAL_REQUEST_STATES.has(request.state)),
+        [jobRequests],
+    );
 
     const isDispatchDegraded = useMemo(() => {
         if (!dispatchStatus) {
@@ -298,24 +389,31 @@ export default function SAMRemoteObservabilityTab(
     }, [jobId]);
 
     useEffect(() => {
-        loadObservability().catch(() => {
-            // Error handling is already managed in loadObservability.
-        });
-        if (pollingTimerRef.current !== null) {
-            window.clearInterval(pollingTimerRef.current);
-        }
-        pollingTimerRef.current = window.setInterval(() => {
-            loadObservability().catch(() => {
-                // Error handling is already managed in loadObservability.
-            });
-        }, intervalMs);
+        const scheduleNextRefresh = (): void => {
+            if (pollingTimerRef.current !== null) {
+                window.clearTimeout(pollingTimerRef.current);
+            }
+            pollingTimerRef.current = window.setTimeout(() => {
+                loadObservability().catch(() => {
+                    // Error handling is already managed in loadObservability.
+                });
+            }, hasPendingRequests ? 5000 : 30000);
+        };
+
+        scheduleNextRefresh();
 
         return () => {
             if (pollingTimerRef.current !== null) {
-                window.clearInterval(pollingTimerRef.current);
+                window.clearTimeout(pollingTimerRef.current);
                 pollingTimerRef.current = null;
             }
         };
+    }, [hasPendingRequests, loadObservability]);
+
+    useEffect(() => {
+        loadObservability().catch(() => {
+            // Error handling is already managed in loadObservability.
+        });
     }, [loadObservability]);
 
     return (
@@ -364,6 +462,7 @@ export default function SAMRemoteObservabilityTab(
                     <Typography.Text strong>Prediction Requests (current job)</Typography.Text>
                     <Divider style={{ margin: '8px 0' }} />
                     <PredictionRequestsSection
+                        jobId={jobId}
                         requests={jobRequests}
                         highlightedRequestId={remoteResult?.request_id}
                     />
