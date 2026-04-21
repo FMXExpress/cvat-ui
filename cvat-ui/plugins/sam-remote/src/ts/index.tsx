@@ -9,6 +9,14 @@ import Alert from 'antd/lib/alert';
 import { PluginEntryPoint, ComponentBuilder } from 'components/plugins-entrypoint';
 import SAMRemoteRunner, { InteractorExtraProps, InteractorPluginTargetProps } from './remote-runner';
 
+export type {
+    PredictionDispatchHealth,
+    PredictionDispatchPathway,
+    PredictionDispatchStatus,
+    JobPredictionRequest,
+    JobPredictionRequestState,
+} from './remote-client';
+
 const SAM_REMOTE_PLUGIN_NAME = 'Segment Anything Remote';
 const AI_TOOLS_INTERACTOR_EXTRAS_PATH = 'aiTools.interactors.extras';
 const ANNOTATION_TOP_BAR_ACTIONS_PATH = 'annotationPage.topBar.actions.items';
