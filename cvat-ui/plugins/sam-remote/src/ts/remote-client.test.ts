@@ -80,3 +80,18 @@ export function testNormalizeCompletedResponseWithNullKeyframesAndWebhookOutput(
     assertEqual(result.n_total_frames, 40, 'webhook_payload.output n_total_frames should be used when keyframes is null');
     assertEqual(result.webhook_payload, webhookPayload, 'webhook_payload should be preserved in normalized response');
 }
+
+export function testNormalizeJobPredictionRequestWithNullableFields(): void {
+    const result = __internal__.normalizeJobPredictionRequest({
+        request_id: 'rq-1',
+        state: 'running',
+        remote_prediction_id: null,
+        details: null,
+        error: null,
+    });
+
+    assertEqual(result.state, 'pending', 'Running state should map to pending');
+    assertEqual(result.remote_prediction_id, null, 'remote_prediction_id should keep null values');
+    assertEqual(result.details, null, 'details should keep null values');
+    assertEqual(result.error, null, 'error should keep null values');
+}

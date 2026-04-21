@@ -90,6 +90,33 @@ export interface PollVideoPredictionStatusOptions {
 const DEFAULT_INITIAL_DELAY_MS = 1000;
 const DEFAULT_MAX_DELAY_MS = 10000;
 
+export interface PredictionDispatchPathway {
+    [key: string]: unknown;
+}
+
+export interface PredictionDispatchStatus {
+    pathways: Record<string, PredictionDispatchPathway>;
+    [key: string]: unknown;
+}
+
+export interface PredictionDispatchHealth {
+    status: string;
+    redis_ok: boolean;
+    acquire_ok: boolean;
+    latency_ms: number | null;
+}
+
+export type JobPredictionRequestState = 'pending' | 'completed' | 'failed' | 'expired';
+
+export interface JobPredictionRequest {
+    state: JobPredictionRequestState;
+    request_id: string;
+    remote_prediction_id: string | null;
+    details: unknown | null;
+    error: string | null;
+    [key: string]: unknown;
+}
+
 function getCookie(name: string): string | null {
     const escapedName = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     const match = document.cookie.match(new RegExp(`(?:^|;\\s*)${escapedName}=([^;]+)`));
@@ -119,6 +146,15 @@ function normalizeState(rawState: unknown): RemoteResultState {
     }
 
     return 'running';
+}
+
+function normalizeJobPredictionRequestState(rawState: unknown): JobPredictionRequestState {
+    const state = normalizeState(rawState);
+    if (state === 'running') {
+        return 'pending';
+    }
+
+    return state;
 }
 
 function toNumberArray(value: unknown): number[] | undefined {
@@ -244,8 +280,45 @@ function normalizeResponse(payload: Record<string, unknown>): NormalizedRemoteRe
     };
 }
 
+function toNullableString(value: unknown): string | null {
+    if (value === null || value === undefined) {
+        return null;
+    }
+
+    if (typeof value === 'string') {
+        return value;
+    }
+
+    return String(value);
+}
+
+function toNullableFiniteNumber(value: unknown): number | null {
+    if (value === null || value === undefined) {
+        return null;
+    }
+
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+}
+
+function normalizeJobPredictionRequest(payload: Record<string, unknown>): JobPredictionRequest {
+    const requestID = toNullableString(payload.request_id)?.trim() || '';
+    const remotePredictionID = toNullableString(payload.remote_prediction_id);
+    const errorValue = toNullableString(payload.error);
+
+    return {
+        ...payload,
+        request_id: requestID,
+        remote_prediction_id: remotePredictionID,
+        state: normalizeJobPredictionRequestState(payload.state || payload.status),
+        details: payload.details ?? null,
+        error: errorValue,
+    };
+}
+
 export const __internal__ = {
     normalizeResponse,
+    normalizeJobPredictionRequest,
 };
 
 async function parseJSONResponse(response: Response): Promise<Record<string, unknown>> {
@@ -432,4 +505,65 @@ export async function pollVideoPredictionStatus(
         request_id: requestId,
         error: `Timed out after ${Number(maxTimeoutMs)}ms while polling remote job status`,
     };
+}
+
+export async function getPredictionDispatchStatus(): Promise<PredictionDispatchStatus> {
+    const response = await fetch('/api/server/predictions/dispatch', {
+        method: 'GET',
+        credentials: 'same-origin',
+    });
+    const payload = await parseJSONResponse(response);
+    if (!response.ok) {
+        const detail = extractDetailMessage(payload);
+        throw new Error(detail || `Failed to fetch prediction dispatch status: ${response.status}`);
+    }
+
+    const pathways = payload.pathways && typeof payload.pathways === 'object' && !Array.isArray(payload.pathways) ?
+        payload.pathways as Record<string, PredictionDispatchPathway> : {};
+
+    return {
+        ...payload,
+        pathways,
+    };
+}
+
+export async function getPredictionDispatchHealth(): Promise<PredictionDispatchHealth> {
+    const response = await fetch('/api/server/predictions/dispatch/health', {
+        method: 'GET',
+        credentials: 'same-origin',
+    });
+    const payload = await parseJSONResponse(response);
+    if (!response.ok) {
+        const detail = extractDetailMessage(payload);
+        throw new Error(detail || `Failed to fetch prediction dispatch health: ${response.status}`);
+    }
+
+    return {
+        status: typeof payload.status === 'string' ? payload.status : '',
+        redis_ok: Boolean(payload.redis_ok),
+        acquire_ok: Boolean(payload.acquire_ok),
+        latency_ms: toNullableFiniteNumber(payload.latency_ms),
+    };
+}
+
+export async function getJobPredictionRequests(jobId: number): Promise<JobPredictionRequest[]> {
+    const response = await fetch(`/api/jobs/${jobId}/video/predictions/requests`, {
+        method: 'GET',
+        credentials: 'same-origin',
+    });
+    const payload = await parseJSONResponse(response);
+    if (!response.ok) {
+        const detail = extractDetailMessage(payload);
+        throw new Error(detail || `Failed to fetch prediction requests: ${response.status}`);
+    }
+
+    if (Array.isArray(payload)) {
+        return payload.filter(isRecord).map(normalizeJobPredictionRequest);
+    }
+
+    if (Array.isArray(payload.results)) {
+        return payload.results.filter(isRecord).map(normalizeJobPredictionRequest);
+    }
+
+    return [];
 }
