@@ -95,6 +95,13 @@ export interface PredictionDispatchPathway {
 }
 
 export interface PredictionDispatchStatus {
+    mode: string | null;
+    queue_timeout_seconds: number | null;
+    poll_interval_seconds: number | null;
+    lease_ttl_seconds: number | null;
+    redis_ok: boolean;
+    redis_error: string | null;
+    server_time: string | null;
     pathways: Record<string, PredictionDispatchPathway>;
     [key: string]: unknown;
 }
@@ -523,6 +530,13 @@ export async function getPredictionDispatchStatus(): Promise<PredictionDispatchS
 
     return {
         ...payload,
+        mode: toNullableString(payload.mode),
+        queue_timeout_seconds: toNullableFiniteNumber(payload.queue_timeout_seconds),
+        poll_interval_seconds: toNullableFiniteNumber(payload.poll_interval_seconds),
+        lease_ttl_seconds: toNullableFiniteNumber(payload.lease_ttl_seconds),
+        redis_ok: Boolean(payload.redis_ok),
+        redis_error: toNullableString(payload.redis_error),
+        server_time: toNullableString(payload.server_time),
         pathways,
     };
 }

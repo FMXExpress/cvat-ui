@@ -19,62 +19,15 @@ import Tag from 'antd/lib/tag';
 import Typography from 'antd/lib/typography';
 import {
     getJobPredictionRequests,
-    getPredictionDispatchHealth,
     getPredictionDispatchStatus,
     JobPredictionRequest,
     NormalizedRemoteResult,
-    PredictionDispatchHealth,
     PredictionDispatchStatus,
 } from './remote-client';
 
 interface SAMRemoteObservabilityTabProps {
     jobId?: number;
     remoteResult: NormalizedRemoteResult | null;
-}
-
-interface DispatchHealthSectionProps {
-    health: PredictionDispatchHealth | null;
-}
-
-function DispatchHealthSection({ health }: DispatchHealthSectionProps): JSX.Element {
-    if (!health) {
-        return <Typography.Text type='secondary'>No dispatch health data loaded yet.</Typography.Text>;
-    }
-
-    const normalizedStatus = (health.status || 'unknown').toLowerCase();
-    let healthTagColor = 'orange';
-    if (normalizedStatus === 'ok') {
-        healthTagColor = 'green';
-    } else if (normalizedStatus === 'degraded') {
-        healthTagColor = 'red';
-    }
-
-    return (
-        <Space direction='vertical' size={4} style={{ width: '100%' }}>
-            <Typography.Text>
-                Status:
-                {' '}
-                <Tag color={healthTagColor}>{health.status || 'unknown'}</Tag>
-            </Typography.Text>
-            <Typography.Text>
-                Redis connectivity:
-                {' '}
-                {health.redis_ok ? 'Healthy' : 'Unavailable'}
-            </Typography.Text>
-            <Typography.Text>
-                Queue lease acquisition:
-                {' '}
-                {health.acquire_ok ? 'Healthy' : 'Unavailable'}
-            </Typography.Text>
-            <Typography.Text>
-                Dispatch latency:
-                {' '}
-                {health.latency_ms ?? 'N/A'}
-                {' '}
-                ms
-            </Typography.Text>
-        </Space>
-    );
 }
 
 interface GlobalQueueStatusSectionProps {
@@ -95,7 +48,7 @@ function disableETAConfidenceIndicators(value: unknown): unknown {
     return Object.entries(value as Record<string, unknown>).reduce<Record<string, unknown>>(
         (acc, [key, nestedValue]) => {
             if (/eta[_\s-]*confidence|confidence[_\s-]*eta/i.test(key)) {
-                acc[key] = 'disabled while dispatch is degraded';
+                acc[key] = 'disabled while redis is unavailable';
                 return acc;
             }
             acc[key] = disableETAConfidenceIndicators(nestedValue);
@@ -105,42 +58,141 @@ function disableETAConfidenceIndicators(value: unknown): unknown {
     );
 }
 
+function getNumericField(pathway: Record<string, unknown>, keys: string[]): number | null {
+    for (const key of keys) {
+        const value = Number(pathway[key]);
+        if (Number.isFinite(value)) {
+            return value;
+        }
+    }
+
+    return null;
+}
+
 function GlobalQueueStatusSection({
     status,
     stale,
     disableETAConfidence,
 }: GlobalQueueStatusSectionProps): JSX.Element {
     const pathways = useMemo(() => Object.entries(status?.pathways || {}), [status]);
-    const pathwaysToRender = useMemo(
-        () => pathways.map(([name, value]: [string, unknown]) => (
-            [name, disableETAConfidence ? disableETAConfidenceIndicators(value) : value] as [string, unknown]
-        )),
-        [pathways, disableETAConfidence],
-    );
 
-    if (!pathwaysToRender.length) {
+    if (!status) {
+        return <Typography.Text type='secondary'>No global queue status loaded yet.</Typography.Text>;
+    }
+
+    if (!pathways.length) {
         return <Typography.Text type='secondary'>No global queue pathways reported by backend.</Typography.Text>;
     }
 
     return (
-        <List
-            size='small'
-            bordered
-            dataSource={pathwaysToRender}
-            renderItem={([pathwayName, pathwayValue]: [string, unknown]) => (
-                <List.Item>
-                    <Space direction='vertical' size={2} style={{ width: '100%' }}>
-                        <Space size={6} wrap>
-                            <Typography.Text strong>{pathwayName}</Typography.Text>
-                            {stale ? <Tag color='gold'>stale</Tag> : null}
-                        </Space>
-                        <Typography.Text code style={{ whiteSpace: 'pre-wrap' }}>
-                            {JSON.stringify(pathwayValue, null, 2)}
-                        </Typography.Text>
-                    </Space>
-                </List.Item>
-            )}
-        />
+        <Space direction='vertical' size='middle' style={{ width: '100%' }}>
+            <Space direction='vertical' size={2} style={{ width: '100%' }}>
+                <Typography.Text>
+                    Mode:
+                    {' '}
+                    {status.mode || 'N/A'}
+                </Typography.Text>
+                <Typography.Text>
+                    Queue timeout:
+                    {' '}
+                    {status.queue_timeout_seconds ?? 'N/A'}
+                    {' '}
+                    sec
+                </Typography.Text>
+                <Typography.Text>
+                    Poll interval:
+                    {' '}
+                    {status.poll_interval_seconds ?? 'N/A'}
+                    {' '}
+                    sec
+                </Typography.Text>
+                <Typography.Text>
+                    Lease TTL:
+                    {' '}
+                    {status.lease_ttl_seconds ?? 'N/A'}
+                    {' '}
+                    sec
+                </Typography.Text>
+                <Typography.Text>
+                    Redis:
+                    {' '}
+                    {status.redis_ok ? 'Healthy' : 'Unavailable'}
+                </Typography.Text>
+                {!status.redis_ok && status.redis_error ? (
+                    <Typography.Text type='danger'>
+                        Redis error:
+                        {' '}
+                        {status.redis_error}
+                    </Typography.Text>
+                ) : null}
+                <Typography.Text>
+                    Server time:
+                    {' '}
+                    {status.server_time || 'N/A'}
+                </Typography.Text>
+            </Space>
+            <List
+                size='small'
+                bordered
+                dataSource={pathways}
+                renderItem={([pathwayName, pathwayValue]: [string, unknown]) => {
+                    const normalizedValue = disableETAConfidence ?
+                        disableETAConfidenceIndicators(pathwayValue) :
+                        pathwayValue;
+                    const pathway = normalizedValue && typeof normalizedValue === 'object' && !Array.isArray(normalizedValue) ?
+                        normalizedValue as Record<string, unknown> :
+                        {};
+                    const queueLength = getNumericField(pathway, ['queue_length', 'queueLength']);
+                    const maxQueueLength = getNumericField(pathway, ['max_queue_length', 'maxQueueLength']);
+                    const inflight = getNumericField(pathway, ['inflight']);
+                    const slotLimit = getNumericField(pathway, ['slot_limit', 'slotLimit']);
+                    const configuredState = pathway.configured_state ?? pathway.configuredState ?? 'N/A';
+                    const nearCapacity = Boolean(
+                        maxQueueLength &&
+                        maxQueueLength > 0 &&
+                        queueLength !== null &&
+                        queueLength >= (maxQueueLength * 0.8),
+                    );
+
+                    return (
+                        <List.Item>
+                            <Space direction='vertical' size={2} style={{ width: '100%' }}>
+                                <Space size={6} wrap>
+                                    <Typography.Text strong>{pathwayName}</Typography.Text>
+                                    {stale ? <Tag color='gold'>stale</Tag> : null}
+                                    {nearCapacity ? <Tag color='orange'>Near capacity</Tag> : null}
+                                </Space>
+                                <Typography.Text>
+                                    Configured state:
+                                    {' '}
+                                    {String(configuredState)}
+                                </Typography.Text>
+                                <Typography.Text>
+                                    Queue length:
+                                    {' '}
+                                    {queueLength ?? 'N/A'}
+                                </Typography.Text>
+                                <Typography.Text>
+                                    Inflight / slot limit:
+                                    {' '}
+                                    {inflight ?? 'N/A'}
+                                    {' / '}
+                                    {slotLimit ?? 'N/A'}
+                                </Typography.Text>
+                                <Typography.Text>
+                                    Max queue length:
+                                    {' '}
+                                    {maxQueueLength ?? 'N/A'}
+                                </Typography.Text>
+                                {nearCapacity ? (
+                                    <Typography.Text type='warning'>Queue is at or above 80% of configured capacity.</Typography.Text>
+                                ) : null}
+                            </Space>
+                        </List.Item>
+                    );
+                }}
+            />
+        </Space>
     );
 }
 
@@ -193,7 +245,6 @@ function PredictionRequestsSection({ requests, highlightedRequestId }: Predictio
 export default function SAMRemoteObservabilityTab(
     { jobId, remoteResult }: SAMRemoteObservabilityTabProps,
 ): JSX.Element {
-    const [dispatchHealth, setDispatchHealth] = useState<PredictionDispatchHealth | null>(null);
     const [dispatchStatus, setDispatchStatus] = useState<PredictionDispatchStatus | null>(null);
     const [lastFreshDispatchStatus, setLastFreshDispatchStatus] = useState<PredictionDispatchStatus | null>(null);
     const [jobRequests, setJobRequests] = useState<JobPredictionRequest[]>([]);
@@ -202,10 +253,13 @@ export default function SAMRemoteObservabilityTab(
     const pollingTimerRef = useRef<number | null>(null);
     const intervalMs = 15000;
 
-    const isDispatchDegraded = useMemo(
-        () => dispatchHealth?.status?.toLowerCase() === 'degraded',
-        [dispatchHealth],
-    );
+    const isDispatchDegraded = useMemo(() => {
+        if (!dispatchStatus) {
+            return false;
+        }
+
+        return !dispatchStatus.redis_ok;
+    }, [dispatchStatus]);
 
     const displayedDispatchStatus = useMemo(() => {
         if (isDispatchDegraded) {
@@ -217,7 +271,6 @@ export default function SAMRemoteObservabilityTab(
 
     const loadObservability = useCallback(async (): Promise<void> => {
         if (!jobId) {
-            setDispatchHealth(null);
             setDispatchStatus(null);
             setLastFreshDispatchStatus(null);
             setJobRequests([]);
@@ -228,14 +281,12 @@ export default function SAMRemoteObservabilityTab(
         setLoading(true);
         setError(null);
         try {
-            const [health, status, requests] = await Promise.all([
-                getPredictionDispatchHealth(),
+            const [status, requests] = await Promise.all([
                 getPredictionDispatchStatus(),
                 getJobPredictionRequests(jobId),
             ]);
-            setDispatchHealth(health);
             setDispatchStatus(status);
-            if (health.status.toLowerCase() === 'ok') {
+            if (status.redis_ok) {
                 setLastFreshDispatchStatus(status);
             }
             setJobRequests(requests);
@@ -290,20 +341,14 @@ export default function SAMRemoteObservabilityTab(
                         description={error}
                     />
                 ) : null}
-                {isDispatchDegraded ? (
+                {dispatchStatus && !dispatchStatus.redis_ok ? (
                     <Alert
-                        type='error'
+                        type='warning'
                         showIcon
-                        message='prediction dispatch unavailable'
-                        description='Showing last-known queue snapshot as stale. ETA confidence indicators are disabled until dispatch health recovers.'
+                        message='Prediction dispatch is degraded (Redis unavailable)'
+                        description={dispatchStatus.redis_error || 'Confidence messaging is disabled until Redis connectivity recovers.'}
                     />
                 ) : null}
-
-                <div>
-                    <Typography.Text strong>Dispatch Health</Typography.Text>
-                    <Divider style={{ margin: '8px 0' }} />
-                    <DispatchHealthSection health={dispatchHealth} />
-                </div>
 
                 <div>
                     <Typography.Text strong>Global Queue Status</Typography.Text>
