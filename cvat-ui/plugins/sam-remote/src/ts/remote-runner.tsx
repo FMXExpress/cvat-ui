@@ -15,7 +15,6 @@ import InputNumber from 'antd/lib/input-number';
 import Select from 'antd/lib/select';
 import Switch from 'antd/lib/switch';
 import Space from 'antd/lib/space';
-import Collapse from 'antd/lib/collapse';
 import Tabs from 'antd/lib/tabs';
 import message from 'antd/lib/message';
 import notification from 'antd/lib/notification';
@@ -53,7 +52,6 @@ interface RemoteRunnerValues {
     nClusters: number;
     budget: number;
     includeFirst: boolean;
-    debugVideoURL?: string;
 }
 
 const DEFAULT_VALUES: RemoteRunnerValues = {
@@ -62,7 +60,6 @@ const DEFAULT_VALUES: RemoteRunnerValues = {
     nClusters: 20,
     budget: 8,
     includeFirst: true,
-    debugVideoURL: '',
 };
 
 function getMissingConfigFields(config: SAMRemotePluginConfig): string[] {
@@ -92,27 +89,6 @@ function validateRemoteURL(_: unknown, value: string): Promise<void> {
     }
 }
 
-function validateVideoReference(_: unknown, value: string): Promise<void> {
-    const trimmedValue = value?.trim();
-    if (!trimmedValue) {
-        return Promise.resolve();
-    }
-
-    if (trimmedValue.startsWith('data:')) {
-        return Promise.resolve();
-    }
-
-    try {
-        const parsedUrl = new URL(trimmedValue);
-        if (!['http:', 'https:'].includes(parsedUrl.protocol)) {
-            throw new Error('Only HTTP(S) URLs are supported');
-        }
-        return Promise.resolve();
-    } catch {
-        return Promise.reject(new Error('Enter a valid HTTP(S) URL or data URI'));
-    }
-}
-
 function storageKey(jobInstance?: Job): string | null {
     if (!jobInstance) {
         return null;
@@ -139,7 +115,6 @@ function loadLastValues(key: string | null): RemoteRunnerValues {
             nClusters: Math.max(1, Number(parsed.nClusters) || DEFAULT_VALUES.nClusters),
             budget: Math.max(1, Number(parsed.budget) || DEFAULT_VALUES.budget),
             includeFirst: typeof parsed.includeFirst === 'boolean' ? parsed.includeFirst : DEFAULT_VALUES.includeFirst,
-            debugVideoURL: typeof parsed.debugVideoURL === 'string' ? parsed.debugVideoURL : DEFAULT_VALUES.debugVideoURL,
         };
     } catch {
         return DEFAULT_VALUES;
@@ -392,8 +367,6 @@ export default function SAMRemoteRunner(
                             stop: jobInstance.stopFrame,
                         };
                     setValidationBounds(accessBounds);
-                    const sourceVideoURL = values.debugVideoURL?.trim() || access.download_url;
-
                     const submitResult = await submitVideoPrediction(jobInstance.id, {
                         remote_url: values.remoteURL,
                         input: {
@@ -401,7 +374,7 @@ export default function SAMRemoteRunner(
                             n_clusters: values.nClusters,
                             budget: values.budget,
                             include_first: values.includeFirst,
-                            video: sourceVideoURL,
+                            video: access.download_url,
                         },
                     });
 
@@ -613,30 +586,6 @@ export default function SAMRemoteRunner(
                                 >
                                     <Switch />
                                 </Form.Item>
-                                <Collapse
-                                    size='small'
-                                    style={{ marginBottom: 12 }}
-                                    items={[
-                                        {
-                                            key: 'advanced',
-                                            label: 'Advanced',
-                                            children: (
-                                                <Form.Item
-                                                    label='Debug override: source video URL or data URI (optional)'
-                                                    name='debugVideoURL'
-                                                    style={{ marginBottom: 0 }}
-                                                    rules={[{ validator: validateVideoReference }]}
-                                                >
-                                                    <Input.TextArea
-                                                        autoSize={{ minRows: 2, maxRows: 6 }}
-                                                        placeholder='https://storage.example/video.mp4 or data:video/mp4;base64,...'
-                                                    />
-                                                </Form.Item>
-                                            ),
-                                        },
-                                    ]}
-                                />
-
                                 <Space.Compact block>
                                     <Button type='primary' htmlType='submit' loading={loading} disabled={loading} style={{ width: '100%' }}>
                                         Process video
