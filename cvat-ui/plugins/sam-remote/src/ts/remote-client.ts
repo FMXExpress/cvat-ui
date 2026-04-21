@@ -118,6 +118,9 @@ export type JobPredictionRequestState = 'pending' | 'completed' | 'failed' | 'ex
 export interface JobPredictionRequest {
     state: JobPredictionRequestState;
     request_id: string;
+    pathway: string | null;
+    created_at: string | null;
+    updated_at: string | null;
     remote_prediction_id: string | null;
     details: unknown | null;
     error: string | null;
@@ -311,14 +314,22 @@ function toNullableFiniteNumber(value: unknown): number | null {
 function normalizeJobPredictionRequest(payload: Record<string, unknown>): JobPredictionRequest {
     const requestID = toNullableString(payload.request_id)?.trim() || '';
     const remotePredictionID = toNullableString(payload.remote_prediction_id);
-    const errorValue = toNullableString(payload.error);
+    const detailsValue = isRecord(payload.details) ? payload.details : null;
+    const errorPayload = payload.error;
+    const errorFromDetails = detailsValue ? extractDetailMessage(detailsValue) : undefined;
+    const errorValue = typeof errorPayload === 'string' ?
+        errorPayload :
+        toNullableString(extractDetailMessage(isRecord(errorPayload) ? errorPayload : {}) || errorFromDetails);
 
     return {
         ...payload,
         request_id: requestID,
+        pathway: toNullableString(payload.pathway),
+        created_at: toNullableString(payload.created_at),
+        updated_at: toNullableString(payload.updated_at),
         remote_prediction_id: remotePredictionID,
         state: normalizeJobPredictionRequestState(payload.state || payload.status),
-        details: payload.details ?? null,
+        details: detailsValue,
         error: errorValue,
     };
 }
