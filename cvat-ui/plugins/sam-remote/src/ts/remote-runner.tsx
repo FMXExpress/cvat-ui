@@ -188,6 +188,14 @@ export default function SAMRemoteRunner(
     const [selectedFrame, setSelectedFrame] = useState<number | null>(null);
     const [activeTab, setActiveTab] = useState<'prediction' | 'observability' | 'prediction-requests'>('prediction');
     const abortControllerRef = useRef<AbortController | null>(null);
+    const isMobileViewport = window.matchMedia('(max-width: 768px)').matches;
+    const tabPaneMaxHeight = isMobileViewport ? '68vh' : '56vh';
+    const tabPaneContentStyle: React.CSSProperties = {
+        maxHeight: tabPaneMaxHeight,
+        overflowY: 'auto',
+        overflowX: 'hidden',
+        paddingRight: 4,
+    };
 
     const runnerStorageKey = useMemo(() => storageKey(jobInstance), [jobInstance?.id, jobInstance?.taskId]);
 
@@ -526,7 +534,7 @@ export default function SAMRemoteRunner(
                         key: 'prediction',
                         label: 'Prediction',
                         children: (
-                            <>
+                            <div style={tabPaneContentStyle}>
                                 <Form.Item
                                     label='Remote prediction URL'
                                     name='remoteURL'
@@ -702,22 +710,28 @@ export default function SAMRemoteRunner(
                                         </div>
                                     </div>
                                 )}
-                            </>
+                            </div>
                         ),
                     },
                     {
                         key: 'observability',
                         label: 'Observability',
-                        children: <SAMRemoteObservabilityTab />,
+                        children: (
+                            <div style={tabPaneContentStyle}>
+                                <SAMRemoteObservabilityTab />
+                            </div>
+                        ),
                     },
                     {
                         key: 'prediction-requests',
                         label: 'Prediction Requests',
                         children: (
-                            <SAMRemotePredictionRequestsTab
-                                jobId={jobInstance?.id}
-                                highlightedRequestId={remoteResult?.request_id}
-                            />
+                            <div style={tabPaneContentStyle}>
+                                <SAMRemotePredictionRequestsTab
+                                    jobId={jobInstance?.id}
+                                    highlightedRequestId={remoteResult?.request_id}
+                                />
+                            </div>
                         ),
                     },
                 ]}
