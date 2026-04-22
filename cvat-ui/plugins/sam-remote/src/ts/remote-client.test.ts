@@ -61,6 +61,72 @@ export function testNormalizeResponseWithWebhookOutputFallback(): void {
     assertEqual(result.n_total_frames, 30, 'webhook_payload.output n_total_frames should be used');
 }
 
+export function testNormalizeResponseWithWebhookOutputSingleElementArray(): void {
+    const result = __internal__.normalizeResponse({
+        status: 'completed',
+        webhook_payload: {
+            output: [
+                {
+                    selected_indices: ['3', 5, 'bad'],
+                    candidate_indices: [7, '9'],
+                    n_total_frames: '11',
+                },
+            ],
+        },
+    });
+
+    assertEqual(result.selected_indices, [3, 5], 'single output record should normalize selected_indices');
+    assertEqual(result.candidate_indices, [7, 9], 'single output record should normalize candidate_indices');
+    assertEqual(result.n_total_frames, 11, 'single output record should normalize n_total_frames');
+}
+
+export function testNormalizeResponseWithWebhookOutputArrayUsesFirstValidRecordDeterministically(): void {
+    const result = __internal__.normalizeResponse({
+        status: 'completed',
+        webhook_payload: {
+            output: [
+                {
+                    selected_indices: [1, 2],
+                    candidate_indices: [3, 4],
+                    n_total_frames: 5,
+                },
+                {
+                    selected_indices: [10, 20],
+                    candidate_indices: [30, 40],
+                    n_total_frames: 50,
+                },
+            ],
+        },
+    });
+
+    assertEqual(result.selected_indices, [1, 2], 'array output should use first valid selected_indices record');
+    assertEqual(result.candidate_indices, [3, 4], 'array output should use first valid candidate_indices record');
+    assertEqual(result.n_total_frames, 5, 'array output should use first valid n_total_frames record');
+}
+
+export function testNormalizeResponseWithWebhookOutputArrayIgnoresNonObjectEntries(): void {
+    const result = __internal__.normalizeResponse({
+        status: 'completed',
+        webhook_payload: {
+            output: [
+                null,
+                42,
+                'invalid',
+                ['nested-array'],
+                {
+                    selected_indices: [6],
+                    candidate_indices: ['8'],
+                    n_total_frames: '10',
+                },
+            ],
+        },
+    });
+
+    assertEqual(result.selected_indices, [6], 'non-object output entries should be ignored for selected_indices');
+    assertEqual(result.candidate_indices, [8], 'non-object output entries should be ignored for candidate_indices');
+    assertEqual(result.n_total_frames, 10, 'non-object output entries should be ignored for n_total_frames');
+}
+
 export function testNormalizeCompletedResponseWithNullKeyframesAndWebhookOutput(): void {
     const webhookPayload = {
         output: {
