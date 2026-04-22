@@ -29,6 +29,7 @@ import {
 } from './remote-client';
 import { adaptKeyframesPayload } from './keyframe-adapter';
 import SAMRemoteObservabilityTab from './remote-observability-tab';
+import SAMRemotePredictionRequestsTab from './remote-prediction-requests-tab';
 
 interface InteractorPluginTargetProps {
     jobInstance?: Job;
@@ -185,7 +186,7 @@ export default function SAMRemoteRunner(
     const [validationBounds, setValidationBounds] = useState<{ start: number; stop: number } | null>(null);
     const [remoteResult, setRemoteResult] = useState<NormalizedRemoteResult | null>(null);
     const [selectedFrame, setSelectedFrame] = useState<number | null>(null);
-    const [activeTab, setActiveTab] = useState<'prediction' | 'observability'>('prediction');
+    const [activeTab, setActiveTab] = useState<'prediction' | 'observability' | 'prediction-requests'>('prediction');
     const abortControllerRef = useRef<AbortController | null>(null);
 
     const runnerStorageKey = useMemo(() => storageKey(jobInstance), [jobInstance?.id, jobInstance?.taskId]);
@@ -516,7 +517,9 @@ export default function SAMRemoteRunner(
             )}
             <Tabs
                 activeKey={activeTab}
-                onChange={(activeKey: string): void => setActiveTab(activeKey as 'prediction' | 'observability')}
+                onChange={(
+                    activeKey: string,
+                ): void => setActiveTab(activeKey as 'prediction' | 'observability' | 'prediction-requests')}
                 destroyInactiveTabPane={false}
                 items={[
                     {
@@ -705,10 +708,15 @@ export default function SAMRemoteRunner(
                     {
                         key: 'observability',
                         label: 'Observability',
+                        children: <SAMRemoteObservabilityTab />,
+                    },
+                    {
+                        key: 'prediction-requests',
+                        label: 'Prediction Requests',
                         children: (
-                            <SAMRemoteObservabilityTab
+                            <SAMRemotePredictionRequestsTab
                                 jobId={jobInstance?.id}
-                                remoteResult={remoteResult}
+                                highlightedRequestId={remoteResult?.request_id}
                             />
                         ),
                     },

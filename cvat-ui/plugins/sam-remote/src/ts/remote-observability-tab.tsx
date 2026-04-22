@@ -14,23 +14,10 @@ import Button from 'antd/lib/button';
 import Divider from 'antd/lib/divider';
 import List from 'antd/lib/list';
 import Skeleton from 'antd/lib/skeleton';
-import Table from 'antd/lib/table';
 import Space from 'antd/lib/space';
 import Tag from 'antd/lib/tag';
 import Typography from 'antd/lib/typography';
-import dayjs from 'dayjs';
-import {
-    getJobPredictionRequests,
-    getPredictionDispatchStatus,
-    JobPredictionRequest,
-    NormalizedRemoteResult,
-    PredictionDispatchStatus,
-} from './remote-client';
-
-interface SAMRemoteObservabilityTabProps {
-    jobId?: number;
-    remoteResult: NormalizedRemoteResult | null;
-}
+import { getPredictionDispatchStatus, PredictionDispatchStatus } from './remote-client';
 
 interface GlobalQueueStatusSectionProps {
     status: PredictionDispatchStatus | null;
@@ -41,43 +28,19 @@ interface GlobalQueueStatusSectionProps {
 }
 
 const OBSERVABILITY_I18N_KEYS = {
-    statusPending: 'plugins.samRemote.observability.request.state.pending',
-    statusCompleted: 'plugins.samRemote.observability.request.state.completed',
-    statusFailed: 'plugins.samRemote.observability.request.state.failed',
-    statusExpired: 'plugins.samRemote.observability.request.state.expired',
     sectionGlobalQueueTitle: 'plugins.samRemote.observability.section.globalQueue.title',
-    sectionPredictionRequestsTitle: 'plugins.samRemote.observability.section.predictionRequests.title',
     loadErrorBannerMessage: 'plugins.samRemote.observability.error.dataUnavailable',
     dispatchDegradedMessage: 'plugins.samRemote.observability.warning.dispatchDegraded',
     staleLabel: 'plugins.samRemote.observability.status.stale',
-    currentLabel: 'plugins.samRemote.observability.status.current',
     queueNearCapacityLabel: 'plugins.samRemote.observability.status.nearCapacity',
-    copyRequestIdTooltip: 'plugins.samRemote.observability.action.copyRequestId',
-    openStatusEndpointTooltip: 'plugins.samRemote.observability.action.openStatusEndpoint',
 };
 
 const OBSERVABILITY_TEXT: Record<keyof typeof OBSERVABILITY_I18N_KEYS, string> = {
-    statusPending: 'Pending',
-    statusCompleted: 'Completed',
-    statusFailed: 'Failed',
-    statusExpired: 'Expired',
     sectionGlobalQueueTitle: 'Global Queue Status',
-    sectionPredictionRequestsTitle: 'Prediction Requests (current job)',
     loadErrorBannerMessage: 'Observability data unavailable',
     dispatchDegradedMessage: 'Prediction dispatch is degraded (Redis unavailable)',
     staleLabel: 'stale',
-    currentLabel: 'Current',
     queueNearCapacityLabel: 'Near capacity',
-    copyRequestIdTooltip: 'Copy request_id',
-    openStatusEndpointTooltip: 'Open status endpoint',
-};
-
-type RequestState = 'pending' | 'completed' | 'failed' | 'expired' | string;
-const REQUEST_STATE_UI: Record<string, { color: string; text: string }> = {
-    pending: { color: 'processing', text: OBSERVABILITY_TEXT.statusPending },
-    completed: { color: 'success', text: OBSERVABILITY_TEXT.statusCompleted },
-    failed: { color: 'error', text: OBSERVABILITY_TEXT.statusFailed },
-    expired: { color: 'warning', text: OBSERVABILITY_TEXT.statusExpired },
 };
 
 function disableETAConfidenceIndicators(value: unknown): unknown {
@@ -254,166 +217,12 @@ function GlobalQueueStatusSection({
     );
 }
 
-interface PredictionRequestsSectionProps {
-    jobId?: number;
-    requests: JobPredictionRequest[];
-    highlightedRequestId?: string;
-    loading: boolean;
-    error: string | null;
-}
-
-const TERMINAL_REQUEST_STATES = new Set(['completed', 'failed', 'expired']);
-
-function renderTimestamp(value: string | null): string {
-    if (!value) {
-        return 'N/A';
-    }
-
-    const parsed = dayjs(value);
-    if (!parsed.isValid()) {
-        return value;
-    }
-
-    return parsed.format('MMM Do YY, H:mm');
-}
-
-function renderStateTag(value: RequestState): JSX.Element {
-    const stateUI = REQUEST_STATE_UI[value] || { color: 'default', text: value };
-    return <Tag color={stateUI.color}>{stateUI.text}</Tag>;
-}
-
-function PredictionRequestsSection(
-    {
-        jobId,
-        requests,
-        highlightedRequestId,
-        loading,
-        error,
-    }: PredictionRequestsSectionProps,
-): JSX.Element {
-    if (loading) {
-        return <Skeleton active paragraph={{ rows: 6 }} title={false} />;
-    }
-
-    if (error) {
-        return <Alert type='error' showIcon message={error} />;
-    }
-
-    return (
-        <Table<JobPredictionRequest>
-            size='small'
-            bordered
-            rowKey='request_id'
-            dataSource={requests}
-            pagination={false}
-            locale={{ emptyText: 'No prediction requests yet' }}
-            columns={[
-                {
-                    title: 'Request ID',
-                    dataIndex: 'request_id',
-                    key: 'request_id',
-                    render: (value: string, request: JobPredictionRequest): JSX.Element => (
-                        <Space size={6} wrap>
-                            <Typography.Text strong>{value || 'N/A'}</Typography.Text>
-                            {highlightedRequestId && request.request_id === highlightedRequestId ?
-                                <Tag color='gold'>{OBSERVABILITY_TEXT.currentLabel}</Tag> :
-                                null}
-                        </Space>
-                    ),
-                },
-                {
-                    title: 'State',
-                    dataIndex: 'state',
-                    key: 'state',
-                    render: (value: string): JSX.Element => renderStateTag(value),
-                },
-                {
-                    title: 'Pathway',
-                    dataIndex: 'pathway',
-                    key: 'pathway',
-                    render: (value: string | null): string => value || 'N/A',
-                },
-                {
-                    title: 'Created',
-                    dataIndex: 'created_at',
-                    key: 'created_at',
-                    render: (value: string | null): string => renderTimestamp(value),
-                },
-                {
-                    title: 'Updated',
-                    dataIndex: 'updated_at',
-                    key: 'updated_at',
-                    render: (value: string | null): string => renderTimestamp(value),
-                },
-                {
-                    title: 'Remote prediction ID',
-                    dataIndex: 'remote_prediction_id',
-                    key: 'remote_prediction_id',
-                    render: (value: string | null): string => value || 'N/A',
-                },
-                {
-                    title: 'Error message',
-                    dataIndex: 'error',
-                    key: 'error',
-                    render: (value: string | null): JSX.Element => {
-                        if (value) {
-                            return <Typography.Text type='danger'>{value}</Typography.Text>;
-                        }
-
-                        return <Typography.Text type='secondary'>—</Typography.Text>;
-                    },
-                },
-                {
-                    title: 'Actions',
-                    key: 'actions',
-                    render: (_: unknown, request: JobPredictionRequest): JSX.Element => (
-                        <Space size={4} wrap>
-                            <Button
-                                size='small'
-                                onClick={(): void => {
-                                    navigator.clipboard.writeText(request.request_id).catch(() => {
-                                        // Browser clipboard API can be unavailable depending on page permissions.
-                                    });
-                                }}
-                            >
-                                {OBSERVABILITY_TEXT.copyRequestIdTooltip}
-                            </Button>
-                            {jobId ? (
-                                <Button
-                                    size='small'
-                                    onClick={(): void => {
-                                        const statusURL = `/api/jobs/${jobId}/video/predictions/${
-                                            encodeURIComponent(request.request_id)
-                                        }`;
-                                        window.open(statusURL, '_blank', 'noopener');
-                                    }}
-                                >
-                                    {OBSERVABILITY_TEXT.openStatusEndpointTooltip}
-                                </Button>
-                            ) : null}
-                        </Space>
-                    ),
-                },
-            ]}
-        />
-    );
-}
-
-export default function SAMRemoteObservabilityTab(
-    { jobId, remoteResult }: SAMRemoteObservabilityTabProps,
-): JSX.Element {
+export default function SAMRemoteObservabilityTab(): JSX.Element {
     const [dispatchStatus, setDispatchStatus] = useState<PredictionDispatchStatus | null>(null);
     const [lastFreshDispatchStatus, setLastFreshDispatchStatus] = useState<PredictionDispatchStatus | null>(null);
-    const [jobRequests, setJobRequests] = useState<JobPredictionRequest[]>([]);
     const [dispatchError, setDispatchError] = useState<string | null>(null);
-    const [requestsError, setRequestsError] = useState<string | null>(null);
     const [dispatchLoading, setDispatchLoading] = useState(false);
-    const [requestsLoading, setRequestsLoading] = useState(false);
     const pollingTimerRef = useRef<number | null>(null);
-    const hasPendingRequests = useMemo(
-        () => jobRequests.some((request: JobPredictionRequest) => !TERMINAL_REQUEST_STATES.has(request.state)),
-        [jobRequests],
-    );
 
     const isDispatchDegraded = useMemo(() => {
         if (!dispatchStatus) {
@@ -432,69 +241,21 @@ export default function SAMRemoteObservabilityTab(
     }, [dispatchStatus, isDispatchDegraded, lastFreshDispatchStatus]);
 
     const loadObservability = useCallback(async (): Promise<void> => {
-        if (!jobId) {
-            setDispatchStatus(null);
-            setLastFreshDispatchStatus(null);
-            setJobRequests([]);
-            setDispatchError('Task/job context is unavailable on the current page.');
-            setRequestsError('Task/job context is unavailable on the current page.');
-            return;
-        }
-
         setDispatchLoading(true);
-        setRequestsLoading(true);
         setDispatchError(null);
-        setRequestsError(null);
-        const [statusResult, requestsResult] = await Promise.allSettled([
-            getPredictionDispatchStatus(),
-            getJobPredictionRequests(jobId),
-        ]);
 
-        if (statusResult.status === 'fulfilled') {
-            const status = statusResult.value;
+        try {
+            const status = await getPredictionDispatchStatus();
             setDispatchStatus(status);
             if (status.redis_ok) {
                 setLastFreshDispatchStatus(status);
             }
-        } else {
-            setDispatchError(statusResult.reason instanceof Error ?
-                statusResult.reason.message :
-                'Failed to load global queue status.');
+        } catch (error: unknown) {
+            setDispatchError(error instanceof Error ? error.message : 'Failed to load global queue status.');
+        } finally {
+            setDispatchLoading(false);
         }
-
-        if (requestsResult.status === 'fulfilled') {
-            setJobRequests(requestsResult.value);
-        } else {
-            setRequestsError(requestsResult.reason instanceof Error ?
-                requestsResult.reason.message :
-                'Failed to load prediction requests.');
-        }
-
-        setDispatchLoading(false);
-        setRequestsLoading(false);
-    }, [jobId]);
-
-    useEffect(() => {
-        const scheduleNextRefresh = (): void => {
-            if (pollingTimerRef.current !== null) {
-                window.clearTimeout(pollingTimerRef.current);
-            }
-            pollingTimerRef.current = window.setTimeout(() => {
-                loadObservability().catch(() => {
-                    // Error handling is already managed in loadObservability.
-                });
-            }, hasPendingRequests ? 5000 : 30000);
-        };
-
-        scheduleNextRefresh();
-
-        return () => {
-            if (pollingTimerRef.current !== null) {
-                window.clearTimeout(pollingTimerRef.current);
-                pollingTimerRef.current = null;
-            }
-        };
-    }, [hasPendingRequests, loadObservability]);
+    }, []);
 
     useEffect(() => {
         loadObservability().catch(() => {
@@ -502,12 +263,31 @@ export default function SAMRemoteObservabilityTab(
         });
     }, [loadObservability]);
 
+    useEffect(() => {
+        if (pollingTimerRef.current !== null) {
+            window.clearTimeout(pollingTimerRef.current);
+        }
+
+        pollingTimerRef.current = window.setTimeout(() => {
+            loadObservability().catch(() => {
+                // Error handling is already managed in loadObservability.
+            });
+        }, 30000);
+
+        return () => {
+            if (pollingTimerRef.current !== null) {
+                window.clearTimeout(pollingTimerRef.current);
+                pollingTimerRef.current = null;
+            }
+        };
+    }, [dispatchStatus, loadObservability]);
+
     return (
         <Space direction='vertical' style={{ width: '100%' }} size={12}>
             <Space>
                 <Button
                     size='small'
-                    loading={dispatchLoading || requestsLoading}
+                    loading={dispatchLoading}
                     onClick={(): void => {
                         loadObservability().catch(() => {
                             // Error handling is already managed in loadObservability.
@@ -517,12 +297,12 @@ export default function SAMRemoteObservabilityTab(
                     Refresh
                 </Button>
             </Space>
-            {(dispatchError && requestsError) ? (
+            {dispatchError ? (
                 <Alert
                     type='warning'
                     showIcon
                     message={OBSERVABILITY_TEXT.loadErrorBannerMessage}
-                    description='Failed to load global queue status and prediction requests.'
+                    description='Failed to load global queue status.'
                 />
             ) : null}
             {dispatchStatus && !dispatchStatus.redis_ok ? (
@@ -543,18 +323,6 @@ export default function SAMRemoteObservabilityTab(
                     disableETAConfidence={isDispatchDegraded}
                     loading={dispatchLoading}
                     error={dispatchError}
-                />
-            </div>
-
-            <div>
-                <Typography.Text strong>{OBSERVABILITY_TEXT.sectionPredictionRequestsTitle}</Typography.Text>
-                <Divider style={{ margin: '8px 0' }} />
-                <PredictionRequestsSection
-                    jobId={jobId}
-                    requests={jobRequests}
-                    highlightedRequestId={remoteResult?.request_id}
-                    loading={requestsLoading}
-                    error={requestsError}
                 />
             </div>
         </Space>
