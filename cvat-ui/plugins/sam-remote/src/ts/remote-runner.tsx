@@ -14,6 +14,7 @@ import Collapse from 'antd/lib/collapse';
 import Form from 'antd/lib/form';
 import Input from 'antd/lib/input';
 import InputNumber from 'antd/lib/input-number';
+import Modal from 'antd/lib/modal';
 import Select from 'antd/lib/select';
 import Switch from 'antd/lib/switch';
 import Space from 'antd/lib/space';
@@ -277,7 +278,8 @@ export default function SAMRemoteRunner(
     const [loading, setLoading] = useState(false);
     const [validationBounds, setValidationBounds] = useState<{ start: number; stop: number } | null>(null);
     const [remoteResult, setRemoteResult] = useState<NormalizedRemoteResult | null>(null);
-    const [selectedRequestId, setSelectedRequestId] = useState<string | null>(null);
+    const [activeRequestId, setActiveRequestId] = useState<string | null>(null);
+    const [loadedRequestId, setLoadedRequestId] = useState<string | null>(null);
     const [selectedFrame, setSelectedFrame] = useState<number | null>(null);
     const [activeTab, setActiveTab] = useState<'prediction' | 'observability' | 'prediction-requests'>('prediction');
     const abortControllerRef = useRef<AbortController | null>(null);
@@ -463,10 +465,6 @@ export default function SAMRemoteRunner(
             index >= accessBounds.start &&
             index <= accessBounds.stop
         ));
-        const currentRequestId = result.request_id?.trim() || null;
-        if (currentRequestId) {
-            setSelectedRequestId(currentRequestId);
-        }
         setRemoteResult({
             ...result,
             selected_indices: extractedFrameIndices,
@@ -521,6 +519,26 @@ export default function SAMRemoteRunner(
             return;
         }
 
+        if (loading) {
+            const confirmed = await new Promise<boolean>((resolve) => {
+                Modal.confirm({
+                    title: 'A remote run is currently in progress',
+                    content: 'Stop current UI polling and load selected request?',
+                    okText: 'Stop polling and load (recommended)',
+                    cancelText: 'Keep current run; cancel load',
+                    onOk: (): void => resolve(true),
+                    onCancel: (): void => resolve(false),
+                });
+            });
+
+            if (!confirmed) {
+                message.info('Keeping current run; selected request was not loaded.');
+                return;
+            }
+
+            cancelRequest();
+        }
+
         const bounds = {
             start: jobInstance.startFrame,
             stop: jobInstance.stopFrame,
@@ -540,7 +558,7 @@ export default function SAMRemoteRunner(
                 return;
             }
 
-            setSelectedRequestId(normalizedRequestId);
+            setLoadedRequestId(normalizedRequestId);
             applyCompletedResult({
                 ...result,
                 request_id: normalizedRequestId,
@@ -557,7 +575,14 @@ export default function SAMRemoteRunner(
         } finally {
             hideMessage();
         }
-    }, [applyCompletedResult, jobInstance?.id, jobInstance?.startFrame, jobInstance?.stopFrame]);
+    }, [
+        applyCompletedResult,
+        cancelRequest,
+        jobInstance?.id,
+        jobInstance?.startFrame,
+        jobInstance?.stopFrame,
+        loading,
+    ]);
 
     return (
         <Form
@@ -583,6 +608,7 @@ export default function SAMRemoteRunner(
                 abortControllerRef.current?.abort();
                 const abortController = new AbortController();
                 abortControllerRef.current = abortController;
+                setLoadedRequestId(null);
                 setRemoteResult(null);
                 setSelectedFrame(null);
 
@@ -606,6 +632,7 @@ export default function SAMRemoteRunner(
                         jobInstance.id,
                         __internal__.buildSubmitPayload(values, access.download_url),
                     );
+                    setActiveRequestId(submitResult.request_id);
 
                     // Intentionally omit maxTimeoutMs: UI polling is unbounded unless user cancels.
                     const result = await pollVideoPredictionStatus(jobInstance.id, submitResult.request_id, {
@@ -616,7 +643,6 @@ export default function SAMRemoteRunner(
                         saveLastValues(runnerStorageKey, {
                             ...values,
                         });
-                        setSelectedRequestId(submitResult.request_id);
                         applyCompletedResult({
                             ...result,
                             request_id: result.request_id || submitResult.request_id,
@@ -980,7 +1006,8 @@ export default function SAMRemoteRunner(
                             <div style={{ ...tabPaneContentStyle, minWidth: 0 }}>
                                 <SAMRemotePredictionRequestsTab
                                     jobId={jobInstance?.id}
-                                    highlightedRequestId={selectedRequestId || undefined}
+                                    activeRequestId={activeRequestId || undefined}
+                                    loadedRequestId={loadedRequestId || undefined}
                                     onSelectRequest={(requestId: string): void => {
                                         handleSelectRequest(requestId).catch(() => {
                                             // Error handling is already managed in handleSelectRequest.

@@ -16,6 +16,7 @@ import Skeleton from 'antd/lib/skeleton';
 import Space from 'antd/lib/space';
 import Table from 'antd/lib/table';
 import Tag from 'antd/lib/tag';
+import Tooltip from 'antd/lib/tooltip';
 import Typography from 'antd/lib/typography';
 import message from 'antd/lib/message';
 import dayjs from 'dayjs';
@@ -24,14 +25,16 @@ import { copyTextToClipboard } from './clipboard';
 
 interface SAMRemotePredictionRequestsTabProps {
     jobId?: number;
-    highlightedRequestId?: string;
+    activeRequestId?: string;
+    loadedRequestId?: string;
     onSelectRequest: (requestId: string) => void;
 }
 
 interface PredictionRequestsSectionProps {
     jobId?: number;
     requests: JobPredictionRequest[];
-    highlightedRequestId?: string;
+    activeRequestId?: string;
+    loadedRequestId?: string;
     onSelectRequest: (requestId: string) => void;
     loading: boolean;
     error: string | null;
@@ -45,6 +48,8 @@ const PREDICTION_REQUESTS_I18N_KEYS = {
     sectionPredictionRequestsTitle: 'plugins.samRemote.observability.section.predictionRequests.title',
     loadErrorBannerMessage: 'plugins.samRemote.observability.error.dataUnavailable',
     currentLabel: 'plugins.samRemote.observability.status.current',
+    activeRunLabel: 'plugins.samRemote.observability.status.activeRun',
+    manuallyLoadedLabel: 'plugins.samRemote.observability.status.manuallyLoaded',
     copyRequestIdTooltip: 'plugins.samRemote.observability.action.copyRequestId',
     openStatusEndpointTooltip: 'plugins.samRemote.observability.action.openStatusEndpoint',
 };
@@ -57,6 +62,8 @@ const PREDICTION_REQUESTS_TEXT: Record<keyof typeof PREDICTION_REQUESTS_I18N_KEY
     sectionPredictionRequestsTitle: 'Prediction Requests (current job)',
     loadErrorBannerMessage: 'Observability data unavailable',
     currentLabel: 'Current',
+    activeRunLabel: 'Active run',
+    manuallyLoadedLabel: 'Loaded result',
     copyRequestIdTooltip: 'Copy request_id',
     openStatusEndpointTooltip: 'Open status endpoint',
 };
@@ -112,7 +119,8 @@ function PredictionRequestsSection(
     {
         jobId,
         requests,
-        highlightedRequestId,
+        activeRequestId,
+        loadedRequestId,
         onSelectRequest,
         loading,
         error,
@@ -145,9 +153,16 @@ function PredictionRequestsSection(
                     render: (value: string, request: JobPredictionRequest): JSX.Element => (
                         <Space size={6} wrap>
                             <Typography.Text strong ellipsis={{ tooltip: value || 'N/A' }}>{value || 'N/A'}</Typography.Text>
-                            {highlightedRequestId && request.request_id === highlightedRequestId ?
-                                <Tag color='gold'>{PREDICTION_REQUESTS_TEXT.currentLabel}</Tag> :
-                                null}
+                            {activeRequestId && request.request_id === activeRequestId ? (
+                                <Tooltip title='This request is currently associated with the active run in the Prediction tab.'>
+                                    <Tag color='processing'>{PREDICTION_REQUESTS_TEXT.activeRunLabel}</Tag>
+                                </Tooltip>
+                            ) : null}
+                            {loadedRequestId && request.request_id === loadedRequestId ? (
+                                <Tooltip title='This request was manually loaded into the Prediction tab.'>
+                                    <Tag color='gold'>{PREDICTION_REQUESTS_TEXT.manuallyLoadedLabel}</Tag>
+                                </Tooltip>
+                            ) : null}
                         </Space>
                     ),
                 },
@@ -240,7 +255,12 @@ function PredictionRequestsSection(
 }
 
 export default function SAMRemotePredictionRequestsTab(
-    { jobId, highlightedRequestId, onSelectRequest }: SAMRemotePredictionRequestsTabProps,
+    {
+        jobId,
+        activeRequestId,
+        loadedRequestId,
+        onSelectRequest,
+    }: SAMRemotePredictionRequestsTabProps,
 ): JSX.Element {
     const [jobRequests, setJobRequests] = useState<JobPredictionRequest[]>([]);
     const [requestsError, setRequestsError] = useState<string | null>(null);
@@ -327,7 +347,8 @@ export default function SAMRemotePredictionRequestsTab(
                 <PredictionRequestsSection
                     jobId={jobId}
                     requests={jobRequests}
-                    highlightedRequestId={highlightedRequestId}
+                    activeRequestId={activeRequestId}
+                    loadedRequestId={loadedRequestId}
                     onSelectRequest={onSelectRequest}
                     loading={requestsLoading}
                     error={requestsError}
