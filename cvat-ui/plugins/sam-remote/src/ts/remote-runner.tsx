@@ -26,6 +26,7 @@ import {
     NormalizedRemoteResult,
     pollVideoPredictionStatus,
     RemoteRequestError,
+    SubmitVideoPredictionOptions,
     submitVideoPrediction,
 } from './remote-client';
 import { adaptKeyframesPayload } from './keyframe-adapter';
@@ -207,6 +208,30 @@ function parseFrameMarkers(
 
 export const __internal__ = {
     parseFrameMarkers,
+    buildSubmitPayload(
+        values: RemoteRunnerValues,
+        videoURL: string,
+    ): SubmitVideoPredictionOptions {
+        const input = {
+            stride: values.stride,
+            n_clusters: values.nClusters,
+            budget: values.budget,
+            include_first: values.includeFirst,
+            video: videoURL,
+        };
+
+        if (values.pathwayMode === 'fast' || values.pathwayMode === 'slow') {
+            return {
+                pathway: values.pathwayMode,
+                input,
+            };
+        }
+
+        return {
+            remote_url: values.remoteURL,
+            input,
+        };
+    },
 };
 
 export default function SAMRemoteRunner(
@@ -441,16 +466,10 @@ export default function SAMRemoteRunner(
                             stop: jobInstance.stopFrame,
                         };
                     setValidationBounds(accessBounds);
-                    const submitResult = await submitVideoPrediction(jobInstance.id, {
-                        remote_url: values.remoteURL,
-                        input: {
-                            stride: values.stride,
-                            n_clusters: values.nClusters,
-                            budget: values.budget,
-                            include_first: values.includeFirst,
-                            video: access.download_url,
-                        },
-                    });
+                    const submitResult = await submitVideoPrediction(
+                        jobInstance.id,
+                        __internal__.buildSubmitPayload(values, access.download_url),
+                    );
 
                     // Intentionally omit maxTimeoutMs: UI polling is unbounded unless user cancels.
                     const result = await pollVideoPredictionStatus(jobInstance.id, submitResult.request_id, {
@@ -602,16 +621,16 @@ export default function SAMRemoteRunner(
                         children: (
                             <div style={{ ...tabPaneContentStyle, minWidth: 0 }}>
                                 <Form.Item
-                                    label='pathway mode'
+                                    label='Pathway mode'
                                     name='pathwayMode'
                                     style={{ marginBottom: 8 }}
                                     rules={[{ required: true, message: 'Pathway mode is required' }]}
                                 >
                                     <Select
                                         options={[
-                                            { value: 'fast', label: 'fast' },
-                                            { value: 'slow', label: 'slow' },
-                                            { value: 'other', label: 'other (custom URL)' },
+                                            { value: 'fast', label: 'Fast' },
+                                            { value: 'slow', label: 'Slow' },
+                                            { value: 'other', label: 'Other' },
                                         ]}
                                     />
                                 </Form.Item>
@@ -625,7 +644,9 @@ export default function SAMRemoteRunner(
                                             children: (
                                                 <>
                                                     <div style={{ marginBottom: 8, color: 'rgba(0, 0, 0, 0.65)' }}>
-                                                        Custom remote URL is used only when pathway mode is set to “other”.
+                                                        Custom remote URL is used only when pathway mode is set to
+                                                        {' '}
+                                                        “other”.
                                                     </div>
                                                     <Form.Item
                                                         label='Remote prediction URL'
@@ -710,7 +731,13 @@ export default function SAMRemoteRunner(
                                     <Switch />
                                 </Form.Item>
                                 <Space.Compact block>
-                                    <Button type='primary' htmlType='submit' loading={loading} disabled={loading} style={{ width: '100%' }}>
+                                    <Button
+                                        type='primary'
+                                        htmlType='submit'
+                                        loading={loading}
+                                        disabled={loading}
+                                        style={{ width: '100%' }}
+                                    >
                                         Process video
                                     </Button>
                                     <Button danger onClick={cancelRequest} disabled={!loading}>
