@@ -81,6 +81,61 @@ export function testNormalizeCompletedResponseWithNullKeyframesAndWebhookOutput(
     assertEqual(result.webhook_payload, webhookPayload, 'webhook_payload should be preserved in normalized response');
 }
 
+export function testNormalizeResponseWithWebhookOutputArrayFallback(): void {
+    const result = __internal__.normalizeResponse({
+        status: 'completed',
+        webhook_payload: {
+            output: [
+                null,
+                'invalid',
+                {
+                    candidate_indices: ['22', 24],
+                },
+                {
+                    selected_indices: ['18', 20],
+                    n_total_frames: '44',
+                },
+            ],
+        },
+    });
+
+    assertEqual(result.selected_indices, [18, 20], 'webhook_payload.output array should use later record selected_indices');
+    assertEqual(result.candidate_indices, [22, 24], 'webhook_payload.output array should use first record candidate_indices');
+    assertEqual(result.n_total_frames, 44, 'webhook_payload.output array should normalize n_total_frames');
+}
+
+export function testNormalizeResponsePreservesTopLevelPrecedenceWithWebhookOutputArray(): void {
+    const result = __internal__.normalizeResponse({
+        status: 'completed',
+        selected_indices: ['1', 3],
+        keyframes: {
+            selected_indices: [5, 7],
+        },
+        webhook_payload: {
+            output: [
+                {
+                    selected_indices: [9, 11],
+                },
+            ],
+        },
+    });
+
+    assertEqual(result.selected_indices, [1, 3], 'top-level selected_indices should remain highest precedence');
+}
+
+export function testNormalizeResponseWithEmptyWebhookOutputArray(): void {
+    const result = __internal__.normalizeResponse({
+        status: 'completed',
+        webhook_payload: {
+            output: [],
+        },
+    });
+
+    assertEqual(result.selected_indices, undefined, 'empty webhook_payload.output array should not produce selected_indices');
+    assertEqual(result.candidate_indices, undefined, 'empty webhook_payload.output array should not produce candidate_indices');
+    assertEqual(result.n_total_frames, undefined, 'empty webhook_payload.output array should not produce n_total_frames');
+}
+
 export function testNormalizeJobPredictionRequestWithNullableFields(): void {
     const result = __internal__.normalizeJobPredictionRequest({
         request_id: 'rq-1',
