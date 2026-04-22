@@ -194,6 +194,10 @@ function parseFrameMarkers(
     return Array.from(new Set(parsedFrames)).sort((left: number, right: number): number => left - right);
 }
 
+export const __internal__ = {
+    parseFrameMarkers,
+};
+
 export default function SAMRemoteRunner(
     {
         targetProps = {},
@@ -215,12 +219,14 @@ export default function SAMRemoteRunner(
     const [activeTab, setActiveTab] = useState<'prediction' | 'observability' | 'prediction-requests'>('prediction');
     const abortControllerRef = useRef<AbortController | null>(null);
     const isMobileViewport = window.matchMedia('(max-width: 768px)').matches;
-    const tabPaneMaxHeight = isMobileViewport ? '68vh' : '56vh';
+    const tabPaneMaxHeight = isMobileViewport ? '72vh' : '62vh';
     const tabPaneContentStyle: React.CSSProperties = {
         maxHeight: tabPaneMaxHeight,
         overflowY: 'auto',
         overflowX: 'hidden',
         paddingRight: 4,
+        paddingBottom: 12,
+        width: '100%',
     };
 
     const runnerStorageKey = useMemo(() => storageKey(jobInstance), [jobInstance?.id, jobInstance?.taskId]);
@@ -575,13 +581,14 @@ export default function SAMRemoteRunner(
                 onChange={(
                     activeKey: string,
                 ): void => setActiveTab(activeKey as 'prediction' | 'observability' | 'prediction-requests')}
+                // Preserve loaded data and in-tab polling context while switching tabs.
                 destroyInactiveTabPane={false}
                 items={[
                     {
                         key: 'prediction',
                         label: 'Prediction',
                         children: (
-                            <div style={tabPaneContentStyle}>
+                            <div style={{ ...tabPaneContentStyle, minWidth: 0 }}>
                                 <Form.Item
                                     label='Remote prediction URL'
                                     name='remoteURL'
@@ -782,7 +789,7 @@ export default function SAMRemoteRunner(
                         key: 'observability',
                         label: 'Observability',
                         children: (
-                            <div style={tabPaneContentStyle}>
+                            <div style={{ ...tabPaneContentStyle, minWidth: 0 }}>
                                 <SAMRemoteObservabilityTab />
                             </div>
                         ),
@@ -791,7 +798,7 @@ export default function SAMRemoteRunner(
                         key: 'prediction-requests',
                         label: 'Prediction Requests',
                         children: (
-                            <div style={tabPaneContentStyle}>
+                            <div style={{ ...tabPaneContentStyle, minWidth: 0 }}>
                                 <SAMRemotePredictionRequestsTab
                                     jobId={jobInstance?.id}
                                     highlightedRequestId={remoteResult?.request_id}

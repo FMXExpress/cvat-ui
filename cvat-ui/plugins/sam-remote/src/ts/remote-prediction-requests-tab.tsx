@@ -127,18 +127,21 @@ function PredictionRequestsSection(
         <Table<JobPredictionRequest>
             size='small'
             bordered
+            style={{ width: '100%' }}
             rowKey='request_id'
             dataSource={requests}
             pagination={false}
+            scroll={{ x: 'max-content' }}
             locale={{ emptyText: 'No prediction requests yet' }}
             columns={[
                 {
                     title: 'Request ID',
                     dataIndex: 'request_id',
                     key: 'request_id',
+                    width: 240,
                     render: (value: string, request: JobPredictionRequest): JSX.Element => (
                         <Space size={6} wrap>
-                            <Typography.Text strong>{value || 'N/A'}</Typography.Text>
+                            <Typography.Text strong ellipsis={{ tooltip: value || 'N/A' }}>{value || 'N/A'}</Typography.Text>
                             {highlightedRequestId && request.request_id === highlightedRequestId ?
                                 <Tag color='gold'>{PREDICTION_REQUESTS_TEXT.currentLabel}</Tag> :
                                 null}
@@ -155,7 +158,10 @@ function PredictionRequestsSection(
                     title: 'Pathway',
                     dataIndex: 'pathway',
                     key: 'pathway',
-                    render: (value: string | null): string => value || 'N/A',
+                    width: 140,
+                    render: (value: string | null): JSX.Element => (
+                        <Typography.Text ellipsis={{ tooltip: value || 'N/A' }}>{value || 'N/A'}</Typography.Text>
+                    ),
                 },
                 {
                     title: 'Created',
@@ -173,15 +179,19 @@ function PredictionRequestsSection(
                     title: 'Remote prediction ID',
                     dataIndex: 'remote_prediction_id',
                     key: 'remote_prediction_id',
-                    render: (value: string | null): string => value || 'N/A',
+                    width: 220,
+                    render: (value: string | null): JSX.Element => (
+                        <Typography.Text ellipsis={{ tooltip: value || 'N/A' }}>{value || 'N/A'}</Typography.Text>
+                    ),
                 },
                 {
                     title: 'Error message',
                     dataIndex: 'error',
                     key: 'error',
+                    width: 280,
                     render: (value: string | null): JSX.Element => {
                         if (value) {
-                            return <Typography.Text type='danger'>{value}</Typography.Text>;
+                            return <Typography.Text type='danger' ellipsis={{ tooltip: value }}>{value}</Typography.Text>;
                         }
 
                         return <Typography.Text type='secondary'>—</Typography.Text>;

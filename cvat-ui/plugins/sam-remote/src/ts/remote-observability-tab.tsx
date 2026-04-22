@@ -155,6 +155,7 @@ function GlobalQueueStatusSection({
             <List
                 size='small'
                 bordered
+                style={{ width: '100%', minWidth: 0 }}
                 dataSource={pathways}
                 renderItem={([pathwayName, pathwayValue]: [string, unknown]) => {
                     const normalizedValue = disableETAConfidence ?
@@ -179,11 +180,11 @@ function GlobalQueueStatusSection({
                         <List.Item>
                             <Space direction='vertical' size={2} style={{ width: '100%' }}>
                                 <Space size={6} wrap>
-                                    <Typography.Text strong>{pathwayName}</Typography.Text>
+                                    <Typography.Text strong style={{ wordBreak: 'break-word' }}>{pathwayName}</Typography.Text>
                                     {stale ? <Tag color='gold'>{OBSERVABILITY_TEXT.staleLabel}</Tag> : null}
                                     {nearCapacity ? <Tag color='orange'>{OBSERVABILITY_TEXT.queueNearCapacityLabel}</Tag> : null}
                                 </Space>
-                                <Typography.Text>
+                                <Typography.Text style={{ wordBreak: 'break-word' }}>
                                     Configured state:
                                     {' '}
                                     {String(configuredState)}
