@@ -30,3 +30,66 @@ export function testParseFrameMarkersClampsToBoundsAndSkipsInvalidTokens(): void
     const parsed = __internal__.parseFrameMarkers('5, 10, nope, 42, -1, 28', 10, 30);
     assertEqual(parsed, [10, 28, 30], 'Frame markers should clamp to bounds and skip invalid tokens');
 }
+
+const BASE_VALUES = {
+    remoteURL: 'https://remote.example/predict',
+    pathwayMode: 'fast' as const,
+    stride: 5,
+    nClusters: 20,
+    budget: 8,
+    includeFirst: true,
+};
+
+export function testBuildSubmitPayloadUsesFastPathway(): void {
+    const payload = __internal__.buildSubmitPayload(BASE_VALUES, 'https://video.example/url.mp4');
+    assertEqual(payload, {
+        pathway: 'fast',
+        input: {
+            stride: 5,
+            n_clusters: 20,
+            budget: 8,
+            include_first: true,
+            video: 'https://video.example/url.mp4',
+        },
+    }, 'Fast pathway mode should map to pathway=fast payload');
+}
+
+export function testBuildSubmitPayloadUsesSlowPathway(): void {
+    const payload = __internal__.buildSubmitPayload(
+        {
+            ...BASE_VALUES,
+            pathwayMode: 'slow',
+        },
+        'https://video.example/url.mp4',
+    );
+    assertEqual(payload, {
+        pathway: 'slow',
+        input: {
+            stride: 5,
+            n_clusters: 20,
+            budget: 8,
+            include_first: true,
+            video: 'https://video.example/url.mp4',
+        },
+    }, 'Slow pathway mode should map to pathway=slow payload');
+}
+
+export function testBuildSubmitPayloadUsesRemoteURLForOtherMode(): void {
+    const payload = __internal__.buildSubmitPayload(
+        {
+            ...BASE_VALUES,
+            pathwayMode: 'other',
+        },
+        'https://video.example/url.mp4',
+    );
+    assertEqual(payload, {
+        remote_url: 'https://remote.example/predict',
+        input: {
+            stride: 5,
+            n_clusters: 20,
+            budget: 8,
+            include_first: true,
+            video: 'https://video.example/url.mp4',
+        },
+    }, 'Other pathway mode should map to remote_url payload');
+}

@@ -48,7 +48,8 @@ export interface SubmitVideoPredictionInput {
 }
 
 export interface SubmitVideoPredictionOptions {
-    remote_url: string;
+    remote_url?: string;
+    pathway?: 'fast' | 'slow';
     input: SubmitVideoPredictionInput;
 }
 
