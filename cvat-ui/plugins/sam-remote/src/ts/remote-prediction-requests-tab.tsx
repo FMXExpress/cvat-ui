@@ -25,12 +25,14 @@ import { copyTextToClipboard } from './clipboard';
 interface SAMRemotePredictionRequestsTabProps {
     jobId?: number;
     highlightedRequestId?: string;
+    onSelectRequest: (requestId: string) => void;
 }
 
 interface PredictionRequestsSectionProps {
     jobId?: number;
     requests: JobPredictionRequest[];
     highlightedRequestId?: string;
+    onSelectRequest: (requestId: string) => void;
     loading: boolean;
     error: string | null;
 }
@@ -111,6 +113,7 @@ function PredictionRequestsSection(
         jobId,
         requests,
         highlightedRequestId,
+        onSelectRequest,
         loading,
         error,
     }: PredictionRequestsSectionProps,
@@ -225,6 +228,9 @@ function PredictionRequestsSection(
                                     {PREDICTION_REQUESTS_TEXT.openStatusEndpointTooltip}
                                 </Button>
                             ) : null}
+                            <Button size='small' onClick={(): void => onSelectRequest(request.request_id)}>
+                                Load in Prediction tab
+                            </Button>
                         </Space>
                     ),
                 },
@@ -234,7 +240,7 @@ function PredictionRequestsSection(
 }
 
 export default function SAMRemotePredictionRequestsTab(
-    { jobId, highlightedRequestId }: SAMRemotePredictionRequestsTabProps,
+    { jobId, highlightedRequestId, onSelectRequest }: SAMRemotePredictionRequestsTabProps,
 ): JSX.Element {
     const [jobRequests, setJobRequests] = useState<JobPredictionRequest[]>([]);
     const [requestsError, setRequestsError] = useState<string | null>(null);
@@ -322,6 +328,7 @@ export default function SAMRemotePredictionRequestsTab(
                     jobId={jobId}
                     requests={jobRequests}
                     highlightedRequestId={highlightedRequestId}
+                    onSelectRequest={onSelectRequest}
                     loading={requestsLoading}
                     error={requestsError}
                 />
