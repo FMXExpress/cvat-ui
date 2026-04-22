@@ -28,6 +28,7 @@ import {
     submitVideoPrediction,
 } from './remote-client';
 import { adaptKeyframesPayload } from './keyframe-adapter';
+import { copyTextToClipboard } from './clipboard';
 import SAMRemoteObservabilityTab from './remote-observability-tab';
 import SAMRemotePredictionRequestsTab from './remote-prediction-requests-tab';
 
@@ -283,18 +284,24 @@ export default function SAMRemoteRunner(
         (remoteResult?.candidate_indices || []).join(',')
     ), [remoteResult?.candidate_indices]);
 
-    const copyIndicesCSV = async (value: string, label: string): Promise<void> => {
-        if (!value) {
+    const copyIndicesCSV = (value: string, label: string): Promise<boolean> => copyTextToClipboard(value, {
+        onEmpty: (): void => {
             message.info(`${label}: no indices returned.`);
+        },
+    });
+
+    const handleCopyIndicesCSV = async (value: string, label: string): Promise<void> => {
+        const copied = await copyIndicesCSV(value, label);
+        if (!value) {
             return;
         }
 
-        try {
-            await navigator.clipboard.writeText(value);
+        if (copied) {
             message.success(`${label} copied to clipboard`);
-        } catch {
-            message.error(`Failed to copy ${label}`);
+            return;
         }
+
+        message.error(`Failed to copy ${label}`);
     };
 
     const navigateToIndex = (index: number): void => {
@@ -634,8 +641,8 @@ export default function SAMRemoteRunner(
                                                 <Button
                                                     size='small'
                                                     onClick={(): void => {
-                                                        copyIndicesCSV(selectedIndicesCSV, 'selected_indices').catch(() => {
-                                                            // Error handling is already managed in copyIndicesCSV.
+                                                        handleCopyIndicesCSV(selectedIndicesCSV, 'selected_indices').catch(() => {
+                                                            // Error handling is already managed in handleCopyIndicesCSV.
                                                         });
                                                     }}
                                                 >
@@ -657,8 +664,8 @@ export default function SAMRemoteRunner(
                                                 <Button
                                                     size='small'
                                                     onClick={(): void => {
-                                                        copyIndicesCSV(candidateIndicesCSV, 'candidate_indices').catch(() => {
-                                                            // Error handling is already managed in copyIndicesCSV.
+                                                        handleCopyIndicesCSV(candidateIndicesCSV, 'candidate_indices').catch(() => {
+                                                            // Error handling is already managed in handleCopyIndicesCSV.
                                                         });
                                                     }}
                                                 >
