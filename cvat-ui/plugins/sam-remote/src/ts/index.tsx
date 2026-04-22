@@ -7,6 +7,7 @@ import Button from 'antd/lib/button';
 import Dropdown from 'antd/lib/dropdown';
 import Alert from 'antd/lib/alert';
 import { PluginEntryPoint, ComponentBuilder } from 'components/plugins-entrypoint';
+import { addSelectedFrames } from 'actions/annotation-actions';
 import SAMRemoteRunner, { InteractorExtraProps, InteractorPluginTargetProps } from './remote-runner';
 
 export type {
@@ -47,6 +48,7 @@ function shouldRenderOnVideoAnnotationPage(targetProps: object = {}): boolean {
 
 function makeSAMRemoteExtra(
     onChangeFrame: (frame: number) => void,
+    onAddSelectedFrames: (frames: number[]) => void,
     pluginConfig: SAMRemotePluginConfig,
 ): React.FC<InteractorExtraProps> {
     return function SAMRemoteExtra({ targetProps = {} }: InteractorExtraProps): JSX.Element {
@@ -54,6 +56,7 @@ function makeSAMRemoteExtra(
             <SAMRemoteRunner
                 targetProps={targetProps}
                 onChangeFrame={onChangeFrame}
+                onAddSelectedFrames={onAddSelectedFrames}
                 pluginConfig={pluginConfig}
             />
         );
@@ -62,6 +65,7 @@ function makeSAMRemoteExtra(
 
 function makeSAMRemoteTopBarAction(
     onChangeFrame: (frame: number) => void,
+    onAddSelectedFrames: (frames: number[]) => void,
     pluginConfig: SAMRemotePluginConfig,
 ): React.FC<InteractorExtraProps> {
     return function SAMRemoteTopBarAction({ targetProps = {} }: InteractorExtraProps): JSX.Element {
@@ -99,6 +103,7 @@ function makeSAMRemoteTopBarAction(
                             <SAMRemoteRunner
                                 targetProps={targetProps}
                                 onChangeFrame={onChangeFrame}
+                                onAddSelectedFrames={onAddSelectedFrames}
                                 pluginConfig={pluginConfig}
                             />
                         </div>
@@ -137,11 +142,17 @@ const builder: ComponentBuilder = ({
         (frame: number): void => {
             dispatch(actionCreators.changeFrameAsync(frame));
         },
+        (frames: number[]): void => {
+            dispatch(addSelectedFrames(frames));
+        },
         pluginConfig,
     );
     const remoteSAMTopBarAction = makeSAMRemoteTopBarAction(
         (frame: number): void => {
             dispatch(actionCreators.changeFrameAsync(frame));
+        },
+        (frames: number[]): void => {
+            dispatch(addSelectedFrames(frames));
         },
         pluginConfig,
     );
