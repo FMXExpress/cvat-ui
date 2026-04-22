@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: MIT
 
-import { __internal__ } from './remote-client';
+import { __internal__, submitVideoPrediction } from './remote-client';
 
 function assert(condition: boolean, message: string): void {
     if (!condition) {
@@ -115,4 +115,102 @@ export function testNormalizeJobPredictionRequestWithObjectError(): void {
     });
 
     assertEqual(result.error, 'remote timeout', 'object error payload should be converted to readable message');
+}
+
+function mockFetchWithStatus(status = 200): { calls: unknown[]; restore: () => void } {
+    const calls: unknown[] = [];
+    const originalFetch = globalThis.fetch;
+
+    globalThis.fetch = (async (_url: string, init?: RequestInit): Promise<Response> => {
+        if (init?.body) {
+            calls.push(JSON.parse(String(init.body)));
+        }
+
+        return {
+            ok: status >= 200 && status < 300,
+            status,
+            headers: {
+                get: (_name: string): string => 'application/json',
+            },
+            json: async (): Promise<Record<string, string>> => ({ request_id: 'req-1' }),
+            text: async (): Promise<string> => JSON.stringify({ request_id: 'req-1' }),
+            statusText: 'OK',
+        } as unknown as Response;
+    }) as typeof fetch;
+
+    return {
+        calls,
+        restore: (): void => {
+            globalThis.fetch = originalFetch;
+        },
+    };
+}
+
+export async function testSubmitVideoPredictionSendsPathwayForFastMode(): Promise<void> {
+    const { calls, restore } = mockFetchWithStatus();
+    try {
+        await submitVideoPrediction(42, {
+            pathway: 'fast',
+            input: {
+                stride: 5,
+                n_clusters: 20,
+                budget: 8,
+                include_first: true,
+                video: 'https://video.example/url.mp4',
+            },
+        });
+
+        assertEqual(calls.length, 1, 'submitVideoPrediction should send one request');
+        const body = calls[0] as Record<string, unknown>;
+        assertEqual(body.pathway, 'fast', 'Fast submit payload should include pathway=fast');
+        assert(!('remote_url' in body), 'Fast submit payload should exclude remote_url');
+    } finally {
+        restore();
+    }
+}
+
+export async function testSubmitVideoPredictionSendsPathwayForSlowMode(): Promise<void> {
+    const { calls, restore } = mockFetchWithStatus();
+    try {
+        await submitVideoPrediction(42, {
+            pathway: 'slow',
+            input: {
+                stride: 5,
+                n_clusters: 20,
+                budget: 8,
+                include_first: true,
+                video: 'https://video.example/url.mp4',
+            },
+        });
+
+        assertEqual(calls.length, 1, 'submitVideoPrediction should send one request');
+        const body = calls[0] as Record<string, unknown>;
+        assertEqual(body.pathway, 'slow', 'Slow submit payload should include pathway=slow');
+        assert(!('remote_url' in body), 'Slow submit payload should exclude remote_url');
+    } finally {
+        restore();
+    }
+}
+
+export async function testSubmitVideoPredictionSendsRemoteURLForOtherMode(): Promise<void> {
+    const { calls, restore } = mockFetchWithStatus();
+    try {
+        await submitVideoPrediction(42, {
+            remote_url: 'https://remote.example/predict',
+            input: {
+                stride: 5,
+                n_clusters: 20,
+                budget: 8,
+                include_first: true,
+                video: 'https://video.example/url.mp4',
+            },
+        });
+
+        assertEqual(calls.length, 1, 'submitVideoPrediction should send one request');
+        const body = calls[0] as Record<string, unknown>;
+        assertEqual(body.remote_url, 'https://remote.example/predict', 'Other mode submit payload should include remote_url');
+        assert(!('pathway' in body), 'Other mode submit payload should exclude pathway');
+    } finally {
+        restore();
+    }
 }
