@@ -47,11 +47,18 @@ export interface SubmitVideoPredictionInput {
     [key: string]: unknown;
 }
 
-export interface SubmitVideoPredictionOptions {
-    remote_url?: string;
-    pathway?: 'fast' | 'slow';
-    input: SubmitVideoPredictionInput;
-}
+export type SubmitVideoPredictionOptions =
+    {
+        pathway: 'fast' | 'slow';
+        profile?: 'fast' | 'slow';
+        remote_url?: never;
+        input: SubmitVideoPredictionInput;
+    } |
+    {
+        remote_url: string;
+        pathway?: never;
+        input: SubmitVideoPredictionInput;
+    };
 
 export interface JobVideoPredictionSubmitResponse {
     request_id: string;
