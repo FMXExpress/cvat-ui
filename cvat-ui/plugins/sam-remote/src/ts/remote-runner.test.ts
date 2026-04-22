@@ -42,6 +42,7 @@ const BASE_VALUES = {
 
 export function testBuildSubmitPayloadUsesFastPathway(): void {
     const payload = __internal__.buildSubmitPayload(BASE_VALUES, 'https://video.example/url.mp4');
+    assert(!('remote_url' in payload), 'Fast pathway mode payload must not include remote_url');
     assertEqual(payload, {
         pathway: 'fast',
         input: {
@@ -62,6 +63,7 @@ export function testBuildSubmitPayloadUsesSlowPathway(): void {
         },
         'https://video.example/url.mp4',
     );
+    assert(!('remote_url' in payload), 'Slow pathway mode payload must not include remote_url');
     assertEqual(payload, {
         pathway: 'slow',
         input: {
@@ -82,6 +84,7 @@ export function testBuildSubmitPayloadUsesRemoteURLForOtherMode(): void {
         },
         'https://video.example/url.mp4',
     );
+    assert(!('pathway' in payload), 'Other mode payload must not include pathway');
     assertEqual(payload, {
         remote_url: 'https://remote.example/predict',
         input: {
@@ -92,4 +95,26 @@ export function testBuildSubmitPayloadUsesRemoteURLForOtherMode(): void {
             video: 'https://video.example/url.mp4',
         },
     }, 'Other pathway mode should map to remote_url payload');
+}
+
+export function testBuildSubmitPayloadNeverSendsUnknownPathway(): void {
+    const payload = __internal__.buildSubmitPayload(
+        {
+            ...BASE_VALUES,
+            pathwayMode: 'unknown' as unknown as 'other',
+        },
+        'https://video.example/url.mp4',
+    );
+
+    assert(!('pathway' in payload), 'Invalid pathway mode fallback must not send pathway');
+    assertEqual(payload, {
+        remote_url: 'https://remote.example/predict',
+        input: {
+            stride: 5,
+            n_clusters: 20,
+            budget: 8,
+            include_first: true,
+            video: 'https://video.example/url.mp4',
+        },
+    }, 'Invalid pathway mode should fallback to remote_url payload');
 }

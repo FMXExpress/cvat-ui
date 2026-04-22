@@ -68,9 +68,11 @@ Flow overview (request lifecycle):
 
 2. **Prediction submit** (browser → CVAT)
    - `POST /api/jobs/<job_id>/video/predictions`
-   - Payload:
-     - `remote_url`: predictor URL CVAT backend should call (absolute URL or CVAT path)
-     - `input`: SAM request payload sent by CVAT to the remote service
+   - Payload is mode-dependent (selected in the SAM Remote UI):
+     - **Fast mode** → `{ "pathway": "fast", "input": { ... } }`
+     - **Slow mode** → `{ "pathway": "slow", "input": { ... } }`
+     - **Other mode** → `{ "remote_url": "<url-or-path>", "input": { ... } }`
+   - `pathway` and `remote_url` are mutually exclusive in FE requests.
    - CVAT responds with `request_id` (and optional `status`/`detail`).
 
 3. **Prediction status polling** (browser → CVAT)
@@ -106,11 +108,47 @@ Flow overview (request lifecycle):
 - Plugin runtime config: `window.CVAT_SAM_REMOTE_PLUGIN_CONFIG.remoteURL` (or deprecated alias `endpoint`)
 - User override in the SAM Remote form (`Remote prediction URL`)
 
-Default UI value is `/api/lambda/functions/sam-remote`.
+Default UI value is `/api/lambda/functions/sam-remote`. This value is used only for **Other** mode payloads.
 
-#### Example API snippets (`request_id` lifecycle)
+#### Example API snippets (`request_id` lifecycle + FE mode payload mapping)
 
-Submit prediction request:
+Submit prediction request (**Fast** mode):
+
+```http
+POST /api/jobs/42/video/predictions
+Content-Type: application/json
+
+{
+  "pathway": "fast",
+  "input": {
+    "stride": 5,
+    "n_clusters": 16,
+    "budget": 20,
+    "include_first": true,
+    "video": "https://cvat.example/api/jobs/42/video/access/download?token=..."
+  }
+}
+```
+
+Submit prediction request (**Slow** mode):
+
+```http
+POST /api/jobs/42/video/predictions
+Content-Type: application/json
+
+{
+  "pathway": "slow",
+  "input": {
+    "stride": 5,
+    "n_clusters": 16,
+    "budget": 20,
+    "include_first": true,
+    "video": "https://cvat.example/api/jobs/42/video/access/download?token=..."
+  }
+}
+```
+
+Submit prediction request (**Other** mode):
 
 ```http
 POST /api/jobs/42/video/predictions
