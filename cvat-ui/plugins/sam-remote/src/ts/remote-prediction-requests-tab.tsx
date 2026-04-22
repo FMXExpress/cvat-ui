@@ -17,8 +17,10 @@ import Space from 'antd/lib/space';
 import Table from 'antd/lib/table';
 import Tag from 'antd/lib/tag';
 import Typography from 'antd/lib/typography';
+import message from 'antd/lib/message';
 import dayjs from 'dayjs';
 import { getJobPredictionRequests, JobPredictionRequest } from './remote-client';
+import { copyTextToClipboard } from './clipboard';
 
 interface SAMRemotePredictionRequestsTabProps {
     jobId?: number;
@@ -83,6 +85,25 @@ function renderTimestamp(value: string | null): string {
 function renderStateTag(value: RequestState): JSX.Element {
     const stateUI = REQUEST_STATE_UI[value] || { color: 'default', text: value };
     return <Tag color={stateUI.color}>{stateUI.text}</Tag>;
+}
+
+async function handleCopyRequestId(requestId: string): Promise<void> {
+    const copied = await copyTextToClipboard(requestId, {
+        onEmpty: (): void => {
+            message.info('Request ID is empty and cannot be copied.');
+        },
+    });
+
+    if (!requestId) {
+        return;
+    }
+
+    if (copied) {
+        message.success('request_id copied to clipboard');
+        return;
+    }
+
+    message.error('Failed to copy request_id');
 }
 
 function PredictionRequestsSection(
@@ -174,8 +195,8 @@ function PredictionRequestsSection(
                             <Button
                                 size='small'
                                 onClick={(): void => {
-                                    navigator.clipboard.writeText(request.request_id).catch(() => {
-                                        // Browser clipboard API can be unavailable depending on page permissions.
+                                    handleCopyRequestId(request.request_id).catch(() => {
+                                        // Error handling is already managed in handleCopyRequestId.
                                     });
                                 }}
                             >
