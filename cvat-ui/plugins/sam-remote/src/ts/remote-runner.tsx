@@ -50,6 +50,7 @@ interface SAMRemotePluginConfig {
 
 interface RemoteRunnerValues {
     remoteURL: string;
+    pathwayMode: 'fast' | 'slow' | 'other';
     stride: number;
     nClusters: number;
     budget: number;
@@ -58,6 +59,7 @@ interface RemoteRunnerValues {
 
 const DEFAULT_VALUES: RemoteRunnerValues = {
     remoteURL: '/api/lambda/functions/sam-remote',
+    pathwayMode: 'fast',
     stride: 5,
     nClusters: 20,
     budget: 8,
@@ -110,13 +112,21 @@ function loadLastValues(key: string | null): RemoteRunnerValues {
             return DEFAULT_VALUES;
         }
 
-        const parsed = JSON.parse(raw) as Partial<RemoteRunnerValues> & { endpoint?: string };
+        const parsed = JSON.parse(raw) as string | (Partial<RemoteRunnerValues> & { endpoint?: string });
+        const isValidPathwayMode = (mode: unknown): mode is RemoteRunnerValues['pathwayMode'] => (
+            mode === 'fast' || mode === 'slow' || mode === 'other'
+        );
+        const parsedValues = typeof parsed === 'string' ? { remoteURL: parsed } : parsed;
+
         return {
-            remoteURL: parsed.remoteURL || parsed.endpoint || DEFAULT_VALUES.remoteURL,
-            stride: Math.max(1, Number(parsed.stride) || DEFAULT_VALUES.stride),
-            nClusters: Math.max(1, Number(parsed.nClusters) || DEFAULT_VALUES.nClusters),
-            budget: Math.max(1, Number(parsed.budget) || DEFAULT_VALUES.budget),
-            includeFirst: typeof parsed.includeFirst === 'boolean' ? parsed.includeFirst : DEFAULT_VALUES.includeFirst,
+            remoteURL: parsedValues.remoteURL || parsedValues.endpoint || DEFAULT_VALUES.remoteURL,
+            pathwayMode: isValidPathwayMode(parsedValues.pathwayMode) ?
+                parsedValues.pathwayMode : DEFAULT_VALUES.pathwayMode,
+            stride: Math.max(1, Number(parsedValues.stride) || DEFAULT_VALUES.stride),
+            nClusters: Math.max(1, Number(parsedValues.nClusters) || DEFAULT_VALUES.nClusters),
+            budget: Math.max(1, Number(parsedValues.budget) || DEFAULT_VALUES.budget),
+            includeFirst: typeof parsedValues.includeFirst === 'boolean' ?
+                parsedValues.includeFirst : DEFAULT_VALUES.includeFirst,
         };
     } catch {
         return DEFAULT_VALUES;
