@@ -533,6 +533,35 @@ export async function pollVideoPredictionStatus(
     };
 }
 
+export async function getVideoPredictionStatus(
+    jobId: number,
+    requestId: string,
+    signal?: AbortSignal,
+): Promise<NormalizedRemoteResult> {
+    const response = await fetch(`/api/jobs/${jobId}/video/predictions/${encodeURIComponent(requestId)}`, {
+        method: 'GET',
+        credentials: 'same-origin',
+        signal,
+    });
+    const payload = await parseJSONResponse(response) as JobVideoPredictionStatus;
+    const normalized = normalizeResponse(payload);
+
+    if (!response.ok) {
+        return {
+            ...normalized,
+            state: 'failed',
+            http_status: response.status,
+            request_id: normalized.request_id || requestId,
+            error: normalized.error || `Failed to fetch prediction status: ${response.status}`,
+        };
+    }
+
+    return {
+        ...normalized,
+        request_id: normalized.request_id || requestId,
+    };
+}
+
 export async function getPredictionDispatchStatus(): Promise<PredictionDispatchStatus> {
     const response = await fetch('/api/server/predictions/dispatch', {
         method: 'GET',

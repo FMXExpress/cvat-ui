@@ -23,6 +23,7 @@ import notification from 'antd/lib/notification';
 import Alert from 'antd/lib/alert';
 import { Job } from 'cvat-core-wrapper';
 import {
+    getVideoPredictionStatus,
     mintVideoAccess,
     NormalizedRemoteResult,
     pollVideoPredictionStatus,
@@ -527,9 +528,7 @@ export default function SAMRemoteRunner(
 
         const hideMessage = message.loading('Loading remote prediction request...', 0);
         try {
-            const result = await pollVideoPredictionStatus(jobInstance.id, normalizedRequestId, {
-                maxTimeoutMs: 60000,
-            });
+            const result = await getVideoPredictionStatus(jobInstance.id, normalizedRequestId);
             if (result.state !== 'completed') {
                 notification.warning({
                     message: 'Unable to load prediction request',
