@@ -206,6 +206,25 @@ function getNestedRecord(
     return isRecord(cursor) ? cursor : undefined;
 }
 
+function extractWebhookOutputRecords(
+    webhookPayload: Record<string, unknown> | undefined,
+): Record<string, unknown>[] {
+    if (!webhookPayload || !('output' in webhookPayload)) {
+        return [];
+    }
+
+    const { output } = webhookPayload;
+    if (isRecord(output)) {
+        return [output];
+    }
+
+    if (Array.isArray(output)) {
+        return output.filter(isRecord);
+    }
+
+    return [];
+}
+
 function getFirstNumberArray(
     sources: Record<string, unknown>[],
     keys: string[],
@@ -278,8 +297,8 @@ function normalizeResponse(payload: Record<string, unknown>): NormalizedRemoteRe
     const error = extractDetailMessage(payload) || payload.error || payload.message;
     const keyframes = getNestedRecord(payload, ['keyframes']);
     const webhookPayload = getNestedRecord(payload, ['webhook_payload']) || getNestedRecord(payload, ['webhookPayload']);
-    const webhookOutput = webhookPayload ? getNestedRecord(webhookPayload, ['output']) : undefined;
-    const valueSources = [payload, keyframes, webhookOutput].filter(isRecord);
+    const webhookOutputRecords = extractWebhookOutputRecords(webhookPayload);
+    const valueSources = [payload, keyframes, ...webhookOutputRecords].filter(isRecord);
 
     const selected = getFirstNumberArray(valueSources, ['selected_indices', 'selectedIndices', 'selectedFrames']);
     const candidate = getFirstNumberArray(valueSources, ['candidate_indices', 'candidateIndices', 'candidateFrames']);
