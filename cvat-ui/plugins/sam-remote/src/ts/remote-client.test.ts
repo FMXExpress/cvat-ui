@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: MIT
 
-import { __internal__, submitVideoPrediction } from './remote-client';
+import { __internal__, getVideoPredictionStatus, submitVideoPrediction } from './remote-client';
 
 function assert(condition: boolean, message: string): void {
     if (!condition) {
@@ -121,7 +121,8 @@ function mockFetchWithStatus(status = 200): { calls: unknown[]; restore: () => v
     const calls: unknown[] = [];
     const originalFetch = globalThis.fetch;
 
-    globalThis.fetch = (async (_url: string, init?: RequestInit): Promise<Response> => {
+    globalThis.fetch = (async (url: string, init?: RequestInit): Promise<Response> => {
+        void url;
         if (init?.body) {
             calls.push(JSON.parse(String(init.body)));
         }
@@ -130,7 +131,10 @@ function mockFetchWithStatus(status = 200): { calls: unknown[]; restore: () => v
             ok: status >= 200 && status < 300,
             status,
             headers: {
-                get: (_name: string): string => 'application/json',
+                get: (name: string): string => {
+                    void name;
+                    return 'application/json';
+                },
             },
             json: async (): Promise<Record<string, string>> => ({ request_id: 'req-1' }),
             text: async (): Promise<string> => JSON.stringify({ request_id: 'req-1' }),
@@ -212,5 +216,76 @@ export async function testSubmitVideoPredictionSendsRemoteURLForOtherMode(): Pro
         assert(!('pathway' in body), 'Other mode submit payload should exclude pathway');
     } finally {
         restore();
+    }
+}
+
+export async function testGetVideoPredictionStatusReturnsNormalizedCompletedResponse(): Promise<void> {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async (url: string): Promise<Response> => {
+        void url;
+        return {
+            ok: true,
+            status: 200,
+            headers: {
+                get: (name: string): string => {
+                    void name;
+                    return 'application/json';
+                },
+            },
+            json: async (): Promise<Record<string, unknown>> => ({
+                status: 'completed',
+                selected_indices: [1, '3'],
+                request_id: 'req-2',
+            }),
+            text: async (): Promise<string> => JSON.stringify({
+                status: 'completed',
+                selected_indices: [1, '3'],
+                request_id: 'req-2',
+            }),
+            statusText: 'OK',
+        } as unknown as Response;
+    }) as typeof fetch;
+
+    try {
+        const result = await getVideoPredictionStatus(42, 'req-2');
+        assertEqual(result.state, 'completed', 'Single status fetch should normalize completed state');
+        assertEqual(result.request_id, 'req-2', 'Single status fetch should keep request ID');
+        assertEqual(result.selected_indices, [1, 3], 'Single status fetch should normalize selected indices');
+    } finally {
+        globalThis.fetch = originalFetch;
+    }
+}
+
+export async function testGetVideoPredictionStatusReturnsFailedStateForHttpError(): Promise<void> {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async (url: string): Promise<Response> => {
+        void url;
+        return {
+            ok: false,
+            status: 404,
+            headers: {
+                get: (name: string): string => {
+                    void name;
+                    return 'application/json';
+                },
+            },
+            json: async (): Promise<Record<string, unknown>> => ({
+                detail: 'missing request',
+            }),
+            text: async (): Promise<string> => JSON.stringify({
+                detail: 'missing request',
+            }),
+            statusText: 'Not Found',
+        } as unknown as Response;
+    }) as typeof fetch;
+
+    try {
+        const result = await getVideoPredictionStatus(42, 'req-missing');
+        assertEqual(result.state, 'failed', 'HTTP error should map to failed state');
+        assertEqual(result.http_status, 404, 'HTTP error should be exposed in normalized result');
+        assertEqual(result.error, 'missing request', 'HTTP error should preserve detail message');
+        assertEqual(result.request_id, 'req-missing', 'Fallback request ID should be preserved');
+    } finally {
+        globalThis.fetch = originalFetch;
     }
 }
