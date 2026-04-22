@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: MIT
 
 import React, {
+    useCallback,
     useEffect,
     useMemo,
     useRef,
@@ -275,6 +276,7 @@ export default function SAMRemoteRunner(
     const [loading, setLoading] = useState(false);
     const [validationBounds, setValidationBounds] = useState<{ start: number; stop: number } | null>(null);
     const [remoteResult, setRemoteResult] = useState<NormalizedRemoteResult | null>(null);
+    const [selectedRequestId, setSelectedRequestId] = useState<string | null>(null);
     const [selectedFrame, setSelectedFrame] = useState<number | null>(null);
     const [activeTab, setActiveTab] = useState<'prediction' | 'observability' | 'prediction-requests'>('prediction');
     const abortControllerRef = useRef<AbortController | null>(null);
@@ -446,6 +448,118 @@ export default function SAMRemoteRunner(
         message.info('No previous selected frame in range.');
     };
 
+    const applyCompletedResult = useCallback((result: NormalizedRemoteResult, accessBounds: {
+        start: number; stop: number;
+    }): void => {
+        setValidationBounds(accessBounds);
+        const adaptedKeyframes = adaptKeyframesPayload(result.keyframes, accessBounds);
+        const extractedFrameIndices = Array.from(new Set([
+            ...adaptedKeyframes.selected_indices,
+            ...(result.selected_indices || []),
+        ])).sort((left: number, right: number): number => left - right);
+        const safeSelectedIndices = extractedFrameIndices.filter((index: number): boolean => (
+            Number.isInteger(index) &&
+            index >= accessBounds.start &&
+            index <= accessBounds.stop
+        ));
+        const currentRequestId = result.request_id?.trim() || null;
+        if (currentRequestId) {
+            setSelectedRequestId(currentRequestId);
+        }
+        setRemoteResult({
+            ...result,
+            selected_indices: extractedFrameIndices,
+            candidate_indices: adaptedKeyframes.candidate_indices || result.candidate_indices,
+        });
+
+        if (adaptedKeyframes.diagnostics.length > 0) {
+            notification.warning({
+                message: 'Keyframe payload requires attention',
+                description: adaptedKeyframes.diagnostics
+                    .map((diagnostic): string => `${diagnostic.path}: ${diagnostic.message}`)
+                    .join(' '),
+            });
+        }
+
+        if (safeSelectedIndices.length) {
+            setSelectedFrame(safeSelectedIndices[0]);
+        }
+
+        if (
+            result.n_total_frames &&
+            accessBounds &&
+            result.n_total_frames !== (accessBounds.stop - accessBounds.start + 1)
+        ) {
+            notification.warning({
+                message: 'Frame count mismatch',
+                description: `Remote n_total_frames=${result.n_total_frames} differs from ` +
+                    `current frame count=${accessBounds.stop - accessBounds.start + 1}.`,
+            });
+        }
+
+        const outOfRangeSelectedCount = extractedFrameIndices
+            .filter((index: number): boolean => (
+                !Number.isInteger(index) ||
+                index < accessBounds.start ||
+                index > accessBounds.stop
+            ))
+            .length;
+
+        if (outOfRangeSelectedCount > 0) {
+            notification.warning({
+                message: 'Remote indices outside current frame range',
+                description: `${outOfRangeSelectedCount} selected indices are outside ` +
+                    `${accessBounds.start}-${accessBounds.stop}.`,
+            });
+        }
+    }, []);
+
+    const handleSelectRequest = useCallback(async (requestId: string): Promise<void> => {
+        const normalizedRequestId = requestId.trim();
+        if (!jobInstance || !normalizedRequestId) {
+            return;
+        }
+
+        const bounds = {
+            start: jobInstance.startFrame,
+            stop: jobInstance.stopFrame,
+        };
+
+        const hideMessage = message.loading('Loading remote prediction request...', 0);
+        try {
+            const result = await pollVideoPredictionStatus(jobInstance.id, normalizedRequestId, {
+                maxTimeoutMs: 60000,
+            });
+            if (result.state !== 'completed') {
+                notification.warning({
+                    message: 'Unable to load prediction request',
+                    description: [
+                        result.error || `Request is currently ${result.state}.`,
+                        requestIdDetails(normalizedRequestId),
+                    ].join('\n'),
+                });
+                return;
+            }
+
+            setSelectedRequestId(normalizedRequestId);
+            applyCompletedResult({
+                ...result,
+                request_id: normalizedRequestId,
+            }, bounds);
+            setActiveTab('prediction');
+            message.success('Prediction request loaded');
+        } catch (error: unknown) {
+            notification.error({
+                message: 'Failed to load prediction request',
+                description: `${error instanceof Error ? error.message : 'Unknown error'}\n${
+                    requestIdDetails(normalizedRequestId)
+                }`,
+            });
+        } finally {
+            hideMessage();
+        }
+    }, [applyCompletedResult, jobInstance?.id, jobInstance?.startFrame, jobInstance?.stopFrame]);
+
     return (
         <Form
             form={form}
@@ -503,62 +617,11 @@ export default function SAMRemoteRunner(
                         saveLastValues(runnerStorageKey, {
                             ...values,
                         });
-                        const adaptedKeyframes = adaptKeyframesPayload(result.keyframes, accessBounds);
-                        const extractedFrameIndices = Array.from(new Set([
-                            ...adaptedKeyframes.selected_indices,
-                            ...(result.selected_indices || []),
-                        ])).sort((left: number, right: number): number => left - right);
-                        const safeSelectedIndices = extractedFrameIndices.filter((index: number): boolean => (
-                            Number.isInteger(index) &&
-                            index >= accessBounds.start &&
-                            index <= accessBounds.stop
-                        ));
-                        setRemoteResult({
+                        setSelectedRequestId(submitResult.request_id);
+                        applyCompletedResult({
                             ...result,
-                            selected_indices: extractedFrameIndices,
-                            candidate_indices: adaptedKeyframes.candidate_indices || result.candidate_indices,
-                        });
-
-                        if (adaptedKeyframes.diagnostics.length > 0) {
-                            notification.warning({
-                                message: 'Keyframe payload requires attention',
-                                description: adaptedKeyframes.diagnostics
-                                    .map((diagnostic): string => `${diagnostic.path}: ${diagnostic.message}`)
-                                    .join(' '),
-                            });
-                        }
-
-                        if (safeSelectedIndices.length) {
-                            setSelectedFrame(safeSelectedIndices[0]);
-                        }
-
-                        if (
-                            result.n_total_frames &&
-                            accessBounds &&
-                            result.n_total_frames !== (accessBounds.stop - accessBounds.start + 1)
-                        ) {
-                            notification.warning({
-                                message: 'Frame count mismatch',
-                                description: `Remote n_total_frames=${result.n_total_frames} differs from ` +
-                                    `current frame count=${accessBounds.stop - accessBounds.start + 1}.`,
-                            });
-                        }
-
-                        const outOfRangeSelectedCount = extractedFrameIndices
-                            .filter((index: number): boolean => (
-                                !Number.isInteger(index) ||
-                                index < accessBounds.start ||
-                                index > accessBounds.stop
-                            ))
-                            .length;
-
-                        if (outOfRangeSelectedCount > 0) {
-                            notification.warning({
-                                message: 'Remote indices outside current frame range',
-                                description: `${outOfRangeSelectedCount} selected indices are outside ` +
-                                    `${accessBounds.start}-${accessBounds.stop}.`,
-                            });
-                        }
+                            request_id: result.request_id || submitResult.request_id,
+                        }, accessBounds);
 
                         message.success('Video processing request completed successfully');
                         notification.success({
@@ -918,7 +981,12 @@ export default function SAMRemoteRunner(
                             <div style={{ ...tabPaneContentStyle, minWidth: 0 }}>
                                 <SAMRemotePredictionRequestsTab
                                     jobId={jobInstance?.id}
-                                    highlightedRequestId={remoteResult?.request_id}
+                                    highlightedRequestId={selectedRequestId || undefined}
+                                    onSelectRequest={(requestId: string): void => {
+                                        handleSelectRequest(requestId).catch(() => {
+                                            // Error handling is already managed in handleSelectRequest.
+                                        });
+                                    }}
                                 />
                             </div>
                         ),
