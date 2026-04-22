@@ -166,6 +166,29 @@ function mapHttpError(stage: 'submit' | 'status' | 'access', status: number): st
     return null;
 }
 
+function isLikelyCustomURLModeDisabled(detail: string): boolean {
+    const normalized = detail.toLowerCase();
+    if (!normalized) {
+        return false;
+    }
+
+    const mentionsRemoteURL = normalized.includes('remote_url') || normalized.includes('remote url');
+    const mentionsPayloadValidation = normalized.includes('invalid payload') ||
+        normalized.includes('validation') ||
+        normalized.includes('not permitted') ||
+        normalized.includes('extra inputs') ||
+        normalized.includes('unknown field') ||
+        normalized.includes('unexpected field') ||
+        normalized.includes('disabled') ||
+        normalized.includes('not enabled');
+
+    return mentionsRemoteURL && mentionsPayloadValidation;
+}
+
+function getCustomURLModeGuidance(): string {
+    return 'Custom URL mode may be disabled on the server. Ask your CVAT admin to enable remote_url dispatch support, or switch to Fast/Slow mode.';
+}
+
 function summarizeWebhookPayload(payload: unknown): string | null {
     if (payload === undefined || payload === null) {
         return null;
@@ -574,7 +597,16 @@ export default function SAMRemoteRunner(
                         // User-facing cancellation message is handled in cancelRequest().
                     } else if (error instanceof RemoteRequestError) {
                         const statusMessage = mapHttpError(error.stage, error.status);
+                        const errorText = [error.detail, error.message].find((item): item is string => (
+                            typeof item === 'string' && Boolean(item.trim())
+                        )) || '';
+                        const isSubmit400 = error.stage === 'submit' && error.status === 400;
+                        const showCustomURLDisabledHint = isSubmit400 && (
+                            pathwayMode === 'other' || isLikelyCustomURLModeDisabled(errorText)
+                        );
+                        const customURLGuidance = showCustomURLDisabledHint ? getCustomURLModeGuidance() : null;
                         const details = [
+                            customURLGuidance,
                             statusMessage || error.detail || error.message,
                             requestIdDetails(error.requestId),
                         ].filter(Boolean).join('\n');
