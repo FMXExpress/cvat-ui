@@ -18,6 +18,7 @@ import Modal from 'antd/lib/modal';
 import Select from 'antd/lib/select';
 import Switch from 'antd/lib/switch';
 import Space from 'antd/lib/space';
+import Tag from 'antd/lib/tag';
 import Tabs from 'antd/lib/tabs';
 import message from 'antd/lib/message';
 import notification from 'antd/lib/notification';
@@ -52,6 +53,11 @@ interface SAMRemotePluginConfig {
     requireRemoteURL?: boolean;
     requireEndpoint?: boolean; // deprecated alias of requireRemoteURL
 }
+
+type RequestStatusNoticeState = {
+    requestId: string;
+    state: 'pending' | 'running';
+};
 
 interface RemoteRunnerValues {
     remoteURL: string;
@@ -282,7 +288,11 @@ export default function SAMRemoteRunner(
     const [loadedRequestId, setLoadedRequestId] = useState<string | null>(null);
     const [selectedFrame, setSelectedFrame] = useState<number | null>(null);
     const [activeTab, setActiveTab] = useState<'prediction' | 'observability' | 'prediction-requests'>('prediction');
+    const [requestStatusNotice, setRequestStatusNotice] = useState<RequestStatusNoticeState | null>(null);
+    const [watchingRequestId, setWatchingRequestId] = useState<string | null>(null);
+    const [watchLoading, setWatchLoading] = useState(false);
     const abortControllerRef = useRef<AbortController | null>(null);
+    const watchAbortControllerRef = useRef<AbortController | null>(null);
     const isMobileViewport = window.matchMedia('(max-width: 768px)').matches;
     const tabPaneMaxHeight = isMobileViewport ? '72vh' : '62vh';
     const tabPaneContentStyle: React.CSSProperties = {
@@ -310,6 +320,7 @@ export default function SAMRemoteRunner(
 
     useEffect(() => (): void => {
         abortControllerRef.current?.abort();
+        watchAbortControllerRef.current?.abort();
     }, []);
 
     const cancelRequest = (): void => {
@@ -513,6 +524,98 @@ export default function SAMRemoteRunner(
         }
     }, []);
 
+    const notifyTerminalRequestState = useCallback((result: NormalizedRemoteResult, requestId: string): void => {
+        if (result.state === 'failed') {
+            const statusMessage = result.http_status ? mapHttpError('status', result.http_status) : null;
+            const webhookSummary = summarizeWebhookPayload(result.webhook_payload);
+            const details = [
+                statusMessage || result.error || 'Remote SAM job failed.',
+                webhookSummary ? `Webhook payload: ${webhookSummary}` : null,
+                requestIdDetails(requestId),
+            ].filter(Boolean).join('\n');
+
+            notification.error({
+                message: 'Remote job failed',
+                description: details,
+            });
+        } else if (result.state === 'expired') {
+            const details = [
+                result.error || 'Remote job expired before completion.',
+                'Please resubmit the job to start a new remote run.',
+                requestIdDetails(requestId),
+            ].join('\n');
+
+            notification.warning({
+                message: 'Remote job expired',
+                description: details,
+            });
+        }
+    }, []);
+
+    const watchRequestStatus = useCallback(async (requestId: string): Promise<void> => {
+        const normalizedRequestId = requestId.trim();
+        if (!jobInstance || !normalizedRequestId) {
+            return;
+        }
+
+        watchAbortControllerRef.current?.abort();
+        const watchAbortController = new AbortController();
+        watchAbortControllerRef.current = watchAbortController;
+        setWatchLoading(true);
+        setWatchingRequestId(normalizedRequestId);
+
+        const bounds = {
+            start: jobInstance.startFrame,
+            stop: jobInstance.stopFrame,
+        };
+
+        try {
+            const result = await pollVideoPredictionStatus(jobInstance.id, normalizedRequestId, {
+                signal: watchAbortController.signal,
+            });
+
+            setRequestStatusNotice(null);
+            if (result.state === 'completed') {
+                setLoadedRequestId(normalizedRequestId);
+                applyCompletedResult({
+                    ...result,
+                    request_id: normalizedRequestId,
+                }, bounds);
+                message.success('Prediction request loaded');
+                notification.success({
+                    message: 'Remote job completed',
+                    description: requestIdDetails(normalizedRequestId),
+                });
+            } else if (result.state === 'failed' || result.state === 'expired') {
+                notifyTerminalRequestState(result, normalizedRequestId);
+            }
+        } catch (error: unknown) {
+            const isAbort = error instanceof DOMException && error.name === 'AbortError';
+            if (!isAbort) {
+                notification.error({
+                    message: 'Failed to watch prediction request',
+                    description: `${error instanceof Error ? error.message : 'Unknown error'}\n${
+                        requestIdDetails(normalizedRequestId)
+                    }`,
+                });
+            }
+        } finally {
+            if (watchAbortControllerRef.current === watchAbortController) {
+                watchAbortControllerRef.current = null;
+            }
+            setWatchLoading(false);
+            setWatchingRequestId((current: string | null): string | null => (
+                current === normalizedRequestId ? null : current
+            ));
+        }
+    }, [
+        applyCompletedResult,
+        jobInstance?.id,
+        jobInstance?.startFrame,
+        jobInstance?.stopFrame,
+        notifyTerminalRequestState,
+    ]);
+
     const handleSelectRequest = useCallback(async (requestId: string): Promise<void> => {
         const normalizedRequestId = requestId.trim();
         if (!jobInstance || !normalizedRequestId) {
@@ -547,24 +650,30 @@ export default function SAMRemoteRunner(
         const hideMessage = message.loading('Loading remote prediction request...', 0);
         try {
             const result = await getVideoPredictionStatus(jobInstance.id, normalizedRequestId);
-            if (result.state !== 'completed') {
-                notification.warning({
-                    message: 'Unable to load prediction request',
-                    description: [
-                        result.error || `Request is currently ${result.state}.`,
-                        requestIdDetails(normalizedRequestId),
-                    ].join('\n'),
-                });
+            if (result.state === 'completed') {
+                setRequestStatusNotice(null);
+                setLoadedRequestId(normalizedRequestId);
+                applyCompletedResult({
+                    ...result,
+                    request_id: normalizedRequestId,
+                }, bounds);
+                setActiveTab('prediction');
+                message.success('Prediction request loaded');
                 return;
             }
 
-            setLoadedRequestId(normalizedRequestId);
-            applyCompletedResult({
-                ...result,
-                request_id: normalizedRequestId,
-            }, bounds);
             setActiveTab('prediction');
-            message.success('Prediction request loaded');
+            if (result.state === 'failed' || result.state === 'expired') {
+                setRequestStatusNotice(null);
+                notifyTerminalRequestState(result, normalizedRequestId);
+                return;
+            }
+
+            setRequestStatusNotice({
+                requestId: normalizedRequestId,
+                state: result.state === 'pending' ? 'pending' : 'running',
+            });
+            message.info('Request still running; refresh or start watch.');
         } catch (error: unknown) {
             notification.error({
                 message: 'Failed to load prediction request',
@@ -582,6 +691,7 @@ export default function SAMRemoteRunner(
         jobInstance?.startFrame,
         jobInstance?.stopFrame,
         loading,
+        notifyTerminalRequestState,
     ]);
 
     return (
@@ -606,9 +716,12 @@ export default function SAMRemoteRunner(
                     return;
                 }
                 abortControllerRef.current?.abort();
+                watchAbortControllerRef.current?.abort();
                 const abortController = new AbortController();
                 abortControllerRef.current = abortController;
                 setLoadedRequestId(null);
+                setRequestStatusNotice(null);
+                setWatchingRequestId(null);
                 setRemoteResult(null);
                 setSelectedFrame(null);
 
@@ -864,11 +977,51 @@ export default function SAMRemoteRunner(
                                         Cancel
                                     </Button>
                                 </Space.Compact>
+                                {requestStatusNotice && (
+                                    <Alert
+                                        style={{ marginTop: 12 }}
+                                        type='info'
+                                        showIcon
+                                        message='Request still running; refresh or start watch.'
+                                        description={(
+                                            <Space wrap>
+                                                <span>
+                                                    Request status is currently
+                                                    {' '}
+                                                    {requestStatusNotice.state}
+                                                    .
+                                                </span>
+                                                <Button
+                                                    size='small'
+                                                    loading={
+                                                        watchLoading &&
+                                                        watchingRequestId === requestStatusNotice.requestId
+                                                    }
+                                                    disabled={loading}
+                                                    onClick={(): void => {
+                                                        watchRequestStatus(requestStatusNotice.requestId).catch(() => {
+                                                            // Error handling is already managed in watchRequestStatus.
+                                                        });
+                                                    }}
+                                                >
+                                                    Watch
+                                                </Button>
+                                            </Space>
+                                        )}
+                                    />
+                                )}
 
                                 {!!remoteResult && (
                                     <div style={{ marginTop: 12 }}>
                                         <div style={{ marginBottom: 8 }}>
-                                            <strong>Remote result summary</strong>
+                                            <Space size={6} align='center' wrap>
+                                                <strong>Remote result summary</strong>
+                                                <Tag color={loadedRequestId ? 'gold' : 'processing'}>
+                                                    {loadedRequestId ?
+                                                        `Loaded from request ${loadedRequestId}` :
+                                                        'Current run'}
+                                                </Tag>
+                                            </Space>
                                             <div>
                                                 selected_indices:
                                                 {remoteResult.selected_indices?.length || 0}
