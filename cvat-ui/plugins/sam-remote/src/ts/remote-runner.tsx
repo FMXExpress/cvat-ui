@@ -9,6 +9,7 @@ import React, {
     useState,
 } from 'react';
 import Button from 'antd/lib/button';
+import Collapse from 'antd/lib/collapse';
 import Form from 'antd/lib/form';
 import Input from 'antd/lib/input';
 import InputNumber from 'antd/lib/input-number';
@@ -222,6 +223,7 @@ export default function SAMRemoteRunner(
 ): JSX.Element {
     const { jobInstance, frame } = targetProps;
     const [form] = Form.useForm<RemoteRunnerValues>();
+    const pathwayMode = Form.useWatch('pathwayMode', form);
     const [loading, setLoading] = useState(false);
     const [validationBounds, setValidationBounds] = useState<{ start: number; stop: number } | null>(null);
     const [remoteResult, setRemoteResult] = useState<NormalizedRemoteResult | null>(null);
@@ -600,14 +602,60 @@ export default function SAMRemoteRunner(
                         children: (
                             <div style={{ ...tabPaneContentStyle, minWidth: 0 }}>
                                 <Form.Item
-                                    label='Remote prediction URL'
-                                    name='remoteURL'
+                                    label='pathway mode'
+                                    name='pathwayMode'
                                     style={{ marginBottom: 8 }}
-                                    extra='CVAT sends the request to this URL and handles callback/webhook updates for the job.'
-                                    rules={[{ validator: validateRemoteURL }]}
+                                    rules={[{ required: true, message: 'Pathway mode is required' }]}
                                 >
-                                    <Input placeholder='https://server.example/predict or /api/lambda/functions/sam-remote' />
+                                    <Select
+                                        options={[
+                                            { value: 'fast', label: 'fast' },
+                                            { value: 'slow', label: 'slow' },
+                                            { value: 'other', label: 'other (custom URL)' },
+                                        ]}
+                                    />
                                 </Form.Item>
+                                <Collapse
+                                    style={{ marginBottom: 8 }}
+                                    size='small'
+                                    items={[
+                                        {
+                                            key: 'advanced',
+                                            label: 'Advanced',
+                                            children: (
+                                                <>
+                                                    <div style={{ marginBottom: 8, color: 'rgba(0, 0, 0, 0.65)' }}>
+                                                        Custom remote URL is used only when pathway mode is set to “other”.
+                                                    </div>
+                                                    <Form.Item
+                                                        label='Remote prediction URL'
+                                                        name='remoteURL'
+                                                        style={{ marginBottom: 0 }}
+                                                        dependencies={['pathwayMode']}
+                                                        extra='CVAT sends the request to this URL and handles callback/webhook updates for the job.'
+                                                        required={pathwayMode === 'other'}
+                                                        rules={[
+                                                            ({ getFieldValue }) => ({
+                                                                validator(rule, value) {
+                                                                    if (getFieldValue('pathwayMode') !== 'other') {
+                                                                        return Promise.resolve();
+                                                                    }
+
+                                                                    return validateRemoteURL(rule, value);
+                                                                },
+                                                            }),
+                                                        ]}
+                                                    >
+                                                        <Input
+                                                            placeholder='https://server.example/predict or /api/lambda/functions/sam-remote'
+                                                            disabled={pathwayMode !== 'other'}
+                                                        />
+                                                    </Form.Item>
+                                                </>
+                                            ),
+                                        },
+                                    ]}
+                                />
                                 <Form.Item
                                     label='stride'
                                     name='stride'
