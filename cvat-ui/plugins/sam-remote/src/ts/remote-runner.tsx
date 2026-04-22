@@ -175,9 +175,34 @@ function requestIdDetails(requestId?: string): string {
     return requestId?.trim() ? `Request ID: ${requestId.trim()}` : 'Request ID: unavailable';
 }
 
+function parseFrameMarkers(
+    value: string,
+    startFrame: number,
+    stopFrame: number,
+): number[] {
+    if (!value.trim()) {
+        return [];
+    }
+
+    const parsedFrames = value
+        .split(/[,\s]+/)
+        .map((token: string): string => token.trim())
+        .filter((token: string): boolean => /^-?\d+$/.test(token))
+        .map((token: string): number => Number.parseInt(token, 10))
+        .map((frameNumber: number): number => Math.min(stopFrame, Math.max(startFrame, frameNumber)));
+
+    return Array.from(new Set(parsedFrames)).sort((left: number, right: number): number => left - right);
+}
+
 export default function SAMRemoteRunner(
-    { targetProps = {}, onChangeFrame, pluginConfig = {} }: InteractorExtraProps & {
+    {
+        targetProps = {},
+        onChangeFrame,
+        onAddSelectedFrames,
+        pluginConfig = {},
+    }: InteractorExtraProps & {
         onChangeFrame: (frame: number) => void;
+        onAddSelectedFrames: (frames: number[]) => void;
         pluginConfig?: SAMRemotePluginConfig;
     },
 ): JSX.Element {
@@ -302,6 +327,21 @@ export default function SAMRemoteRunner(
         }
 
         message.error(`Failed to copy ${label}`);
+    };
+
+    const handleAddFrameMarkers = (value: string): void => {
+        if (!jobInstance) {
+            return;
+        }
+
+        const parsedFrames = parseFrameMarkers(value, jobInstance.startFrame, jobInstance.stopFrame);
+        if (!parsedFrames.length) {
+            message.info('No valid frame markers to add');
+            return;
+        }
+
+        onAddSelectedFrames(parsedFrames);
+        message.success(`Added ${parsedFrames.length} frame markers`);
     };
 
     const navigateToIndex = (index: number): void => {
@@ -641,12 +681,21 @@ export default function SAMRemoteRunner(
                                                 <Button
                                                     size='small'
                                                     onClick={(): void => {
-                                                        handleCopyIndicesCSV(selectedIndicesCSV, 'selected_indices').catch(() => {
-                                                            // Error handling is already managed in handleCopyIndicesCSV.
-                                                        });
+                                                        handleCopyIndicesCSV(selectedIndicesCSV, 'selected_indices')
+                                                            .catch(() => {
+                                                                // handled in helper
+                                                            });
                                                     }}
                                                 >
                                                     Copy
+                                                </Button>
+                                                <Button
+                                                    size='small'
+                                                    onClick={(): void => {
+                                                        handleAddFrameMarkers(selectedIndicesCSV);
+                                                    }}
+                                                >
+                                                    Add to markers
                                                 </Button>
                                                 {!selectedIndicesCSV && (
                                                     <span style={{ color: 'rgba(0, 0, 0, 0.45)' }}>No indices returned</span>
@@ -664,12 +713,21 @@ export default function SAMRemoteRunner(
                                                 <Button
                                                     size='small'
                                                     onClick={(): void => {
-                                                        handleCopyIndicesCSV(candidateIndicesCSV, 'candidate_indices').catch(() => {
-                                                            // Error handling is already managed in handleCopyIndicesCSV.
-                                                        });
+                                                        handleCopyIndicesCSV(candidateIndicesCSV, 'candidate_indices')
+                                                            .catch(() => {
+                                                                // handled in helper
+                                                            });
                                                     }}
                                                 >
                                                     Copy
+                                                </Button>
+                                                <Button
+                                                    size='small'
+                                                    onClick={(): void => {
+                                                        handleAddFrameMarkers(candidateIndicesCSV);
+                                                    }}
+                                                >
+                                                    Add to markers
                                                 </Button>
                                                 {!candidateIndicesCSV && (
                                                     <span style={{ color: 'rgba(0, 0, 0, 0.45)' }}>No indices returned</span>
