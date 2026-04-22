@@ -68,6 +68,7 @@ function makeSAMRemoteTopBarAction(
         const requireRemoteURL = pluginConfig.requireRemoteURL ?? pluginConfig.requireEndpoint;
         const resolvedRemoteURL = pluginConfig.remoteURL?.trim() || pluginConfig.endpoint?.trim();
         const hasMissingRequiredConfig = Boolean(requireRemoteURL && !resolvedRemoteURL);
+        const isMobileViewport = window.matchMedia('(max-width: 768px)').matches;
 
         return (
             <Dropdown
@@ -75,27 +76,32 @@ function makeSAMRemoteTopBarAction(
                 overlayClassName='cvat-sam-remote-top-bar-dropdown'
                 dropdownRender={() => (
                     <div style={{
-                        width: 360,
-                        maxWidth: 'min(90vw, 360px)',
+                        width: isMobileViewport ? '95vw' : '80vw',
+                        maxWidth: isMobileViewport ? '95vw' : '80vw',
+                        height: isMobileViewport ? '95vh' : '80vh',
+                        maxHeight: isMobileViewport ? '95vh' : '80vh',
                         padding: 12,
                         background: '#fff',
                         boxShadow: '0 6px 16px rgba(0,0,0,0.2)',
+                        overflow: 'hidden',
                     }}
                     >
-                        {hasMissingRequiredConfig && (
-                            <Alert
-                                type='warning'
-                                showIcon
-                                style={{ marginBottom: 12 }}
-                                message='SAM Remote needs plugin configuration'
-                                description='Set remoteURL in CVAT_SAM_REMOTE_PLUGIN_CONFIG to run remote sampling. CVAT will call the remote service and manage webhook updates.'
+                        <div style={{ height: '100%', overflowY: 'auto' }}>
+                            {hasMissingRequiredConfig && (
+                                <Alert
+                                    type='warning'
+                                    showIcon
+                                    style={{ marginBottom: 12 }}
+                                    message='SAM Remote needs plugin configuration'
+                                    description='Set remoteURL in CVAT_SAM_REMOTE_PLUGIN_CONFIG to run remote sampling. CVAT will call the remote service and manage webhook updates.'
+                                />
+                            )}
+                            <SAMRemoteRunner
+                                targetProps={targetProps}
+                                onChangeFrame={onChangeFrame}
+                                pluginConfig={pluginConfig}
                             />
-                        )}
-                        <SAMRemoteRunner
-                            targetProps={targetProps}
-                            onChangeFrame={onChangeFrame}
-                            pluginConfig={pluginConfig}
-                        />
+                        </div>
                     </div>
                 )}
             >
