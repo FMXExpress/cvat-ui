@@ -2952,6 +2952,39 @@ paths:
               schema:
                 $ref: '#/components/schemas/JobValidationLayoutRead'
           description: ''
+  /api/jobs/{id}/video/predictions/requests:
+    get:
+      operationId: jobs_list_video_prediction_requests
+      summary: List recent video prediction requests for a job
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this job.
+        required: true
+      - in: query
+        name: limit
+        schema:
+          type: integer
+        description: Max number of recent requests to return (1-100). Defaults to
+          100.
+      tags:
+      - jobs
+      security:
+      - tokenAuth: []
+      - accessTokenAuth: []
+      - sessionAuth: []
+        csrfAuth: []
+        csrfHeaderAuth: []
+      - basicAuth: []
+      responses:
+        '200':
+          content:
+            application/vnd.cvat+json:
+              schema:
+                $ref: '#/components/schemas/JobVideoPredictionRequestList'
+          description: ''
   /api/labels:
     get:
       operationId: labels_list
@@ -5091,6 +5124,26 @@ paths:
             application/vnd.cvat+json:
               schema:
                 $ref: '#/components/schemas/Plugins'
+          description: ''
+  /api/server/predictions/dispatch:
+    get:
+      operationId: server_retrieve_prediction_dispatch_status
+      summary: Get prediction dispatch status
+      tags:
+      - server
+      security:
+      - tokenAuth: []
+      - accessTokenAuth: []
+      - sessionAuth: []
+        csrfAuth: []
+        csrfHeaderAuth: []
+      - basicAuth: []
+      responses:
+        '200':
+          content:
+            application/vnd.cvat+json:
+              schema:
+                $ref: '#/components/schemas/PredictionDispatchStatus'
           description: ''
   /api/server/share:
     get:
@@ -8466,6 +8519,119 @@ components:
       required:
       - task_id
       - type
+    JobVideoPredictionSubmitRequest:
+      type: object
+      properties:
+        pathway:
+          $ref: '#/components/schemas/PathwayEnum'
+          description: Selects a configured prediction service URL.
+        profile:
+          allOf:
+          - $ref: '#/components/schemas/PathwayEnum'
+          writeOnly: true
+          description: Alias for pathway.
+        remote_url:
+          type: string
+          format: uri
+          description: Deprecated legacy field; only accepted when legacy compatibility
+            is enabled on server.
+        input:
+          type: object
+          additionalProperties: {}
+      required:
+      - input
+    JobVideoPredictionSubmitResponse:
+      type: object
+      properties:
+        request_id:
+          type: string
+          format: uuid
+        webhook_url:
+          type: string
+          format: uri
+          description: Callback URL CVAT passes to the remote provider. The provider
+            should POST result payloads to this URL. After request/token/job validation,
+            duplicate or late webhook deliveries are acknowledged idempotently with
+            HTTP 202 and do not overwrite conflicting terminal data.
+        remote_url:
+          type: string
+          format: uri
+        remote_status_code:
+          type: integer
+          minimum: 100
+          maximum: 599
+        remote_headers:
+          type: object
+          additionalProperties:
+            type: string
+      required:
+      - remote_headers
+      - remote_status_code
+      - remote_url
+      - request_id
+      - webhook_url
+    JobVideoPredictionRequestListItem:
+      type: object
+      properties:
+        request_id:
+          type: string
+          format: uuid
+        status:
+          allOf:
+          - $ref: '#/components/schemas/VideoPredictionRequestStatusEnum'
+          description: |-
+            Effective CVAT status after applying precedence rules.
+
+            Explicit failure statuses in webhook data produce `failed`.
+            Non-terminal textual statuses (for example `processing`) remain `pending`
+            unless terminal output data is present.
+            Once finalized (not `pending`), later duplicate or conflicting webhook
+            payloads are acknowledged idempotently and existing terminal data is preserved.
+        pathway:
+          type: string
+        remote_url:
+          type: string
+          format: uri
+        created_at:
+          type: string
+          format: date-time
+        submitted_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        expires_at:
+          type: string
+          format: date-time
+        remote_prediction_id:
+          type: string
+          description: Provider-side prediction identifier extracted from submit/status
+            responses when available.
+        remote_error:
+          nullable: true
+          description: Error message from provider payloads (for example webhook `error`
+            field) when present.
+      required:
+      - created_at
+      - expires_at
+      - pathway
+      - remote_url
+      - request_id
+      - status
+    JobVideoPredictionRequestList:
+      type: object
+      properties:
+        count:
+          type: integer
+          minimum: 0
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/JobVideoPredictionRequestListItem'
+      required:
+      - count
+      - results
     JobsSummary:
       type: object
       properties:
@@ -9933,6 +10099,26 @@ components:
             accuracy in cases there are no annotations. If disabled, frames without annotations
             are counted as not matching (accuracy is 0). If enabled, accuracy will be 1 instead.
             This will also add virtual annotations to empty frames in the comparison results.
+    PathwayEnum:
+      enum:
+      - fast
+      - slow
+      type: string
+    VideoPredictionRequestStatusEnum:
+      enum:
+      - pending
+      - completed
+      - failed
+      - expired
+      type: string
+      description: |-
+        Effective request state as interpreted by CVAT.
+
+        Precedence: explicit failures (`failed`, `error`, `cancelled`, etc.) win first.
+        If webhook payload contains non-empty terminal data keys (`output`, `keyframes`,
+        `selected_indices`, `candidate_indices`), the state is `completed` even when
+        textual status is non-terminal (for example `processing`).
+        Otherwise, non-terminal textual statuses map to `pending`.
     PatchedTaskValidationLayoutWriteRequest:
       type: object
       properties:
@@ -10077,6 +10263,72 @@ components:
       - GIT_INTEGRATION
       - MODELS
       - PREDICT
+    PredictionDispatchPathwayStats:
+      type: object
+      properties:
+        queue_length:
+          type: integer
+          minimum: 0
+        inflight:
+          type: integer
+          minimum: 0
+        slot_limit:
+          type: integer
+          minimum: 0
+        max_queue_length:
+          type: integer
+          minimum: 0
+        configured:
+          type: boolean
+      required:
+      - configured
+      - inflight
+      - max_queue_length
+      - queue_length
+      - slot_limit
+    PredictionDispatchPathways:
+      type: object
+      properties:
+        fast:
+          $ref: '#/components/schemas/PredictionDispatchPathwayStats'
+        slow:
+          $ref: '#/components/schemas/PredictionDispatchPathwayStats'
+        unknown:
+          $ref: '#/components/schemas/PredictionDispatchPathwayStats'
+      required:
+      - fast
+      - slow
+      - unknown
+    PredictionDispatchStatus:
+      type: object
+      properties:
+        mode:
+          type: string
+        queue_timeout_seconds:
+          type: number
+          format: double
+          minimum: 0
+        poll_interval_seconds:
+          type: number
+          format: double
+          minimum: 0
+        lease_ttl_seconds:
+          type: integer
+          minimum: 1
+        pathways:
+          $ref: '#/components/schemas/PredictionDispatchPathways'
+        redis_ok:
+          type: boolean
+        redis_error:
+          type: string
+          nullable: true
+      required:
+      - lease_ttl_seconds
+      - mode
+      - pathways
+      - poll_interval_seconds
+      - queue_timeout_seconds
+      - redis_ok
     ProjectFileRequest:
       type: object
       properties:

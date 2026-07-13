@@ -138,6 +138,8 @@ class ServerPermission(OpenPolicyAgentPermission):
             {
                 ("annotation_formats", "GET"): Scopes.VIEW,
                 ("about", "GET"): Scopes.VIEW,
+                ("prediction_dispatch_status", "GET"): Scopes.VIEW,
+                ("prediction_dispatch_health", "GET"): Scopes.VIEW,
                 ("plugins", "GET"): Scopes.VIEW,
                 ("share", "GET"): Scopes.LIST_CONTENT,
             }[(view.action, request.method)]
@@ -1010,6 +1012,12 @@ class JobPermission(OpenPolicyAgentPermission, DownloadExportedExtension):
             ("append_annotations_chunk", "PATCH"): Scopes.UPDATE_ANNOTATIONS,
             ("append_annotations_chunk", "HEAD"): Scopes.UPDATE_ANNOTATIONS,
             ("data", "GET"): Scopes.VIEW_DATA,
+            ("video_access", "POST"): Scopes.VIEW_DATA,
+            ("video_predictions", "POST"): Scopes.VIEW_DATA,
+            ("video_prediction_status", "GET"): Scopes.VIEW_DATA,
+            ("video_prediction_requests", "GET"): Scopes.VIEW_DATA,
+            ("video_predictions_webhook", "POST"): Scopes.VIEW_DATA,
+            ("video_predictions_webhook_by_id", "POST"): Scopes.VIEW_DATA,
             ("metadata", "GET"): Scopes.VIEW_METADATA,
             ("metadata", "PATCH"): Scopes.UPDATE_METADATA,
             ("initiate_dataset_export", "POST"): (

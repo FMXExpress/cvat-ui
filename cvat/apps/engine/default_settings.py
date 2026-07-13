@@ -41,6 +41,18 @@ default_export_cache_ttl = 60 * 60 * 24
 default_export_cache_lock_ttl = 30
 default_export_cache_lock_acquisition_timeout = 50
 default_export_locked_retry_interval = 60
+default_job_video_download_token_ttl = 10 * 60
+default_job_video_prediction_request_ttl = 24 * 60 * 60
+default_job_video_prediction_webhook_grace_timeout = 15 * 60
+default_job_video_prediction_reconciliation_max_scan = 1000
+default_job_video_prediction_dispatch_mode = "queued"
+default_job_video_prediction_max_concurrency_fast = 1
+default_job_video_prediction_max_concurrency_slow = 1
+default_job_video_prediction_dispatch_queue_timeout_seconds = 30.0
+default_job_video_prediction_dispatch_max_queue_length_fast = 0
+default_job_video_prediction_dispatch_max_queue_length_slow = 0
+default_job_video_prediction_dispatch_poll_interval_seconds = 0.1
+default_job_video_prediction_dispatch_lease_ttl_seconds = 120
 
 EXPORT_CACHE_TTL = os.getenv("CVAT_DATASET_CACHE_TTL")
 "Base lifetime for cached export files, in seconds"
@@ -110,3 +122,170 @@ DEFAULT_DB_BULK_CREATE_BATCH_SIZE = int(os.getenv("CVAT_DEFAULT_DB_BULK_CREATE_B
 DEFAULT_DB_ANNO_CHUNK_SIZE = int(os.getenv("CVAT_DEFAULT_DB_ANNO_CHUNK_SIZE", 2000))
 
 MAX_JOBS_PER_TASK = int(os.getenv("CVAT_MAX_JOBS_PER_TASK", 5_000))
+
+JOB_VIDEO_DOWNLOAD_TOKEN_TTL_SECONDS = int(
+    os.getenv("CVAT_JOB_VIDEO_DOWNLOAD_TOKEN_TTL_SECONDS", default_job_video_download_token_ttl)
+)
+"Signed token TTL for job video downloads, in seconds."
+
+JOB_VIDEO_DOWNLOAD_TOKEN_ONE_TIME_USE = to_bool(
+    os.getenv("CVAT_JOB_VIDEO_DOWNLOAD_TOKEN_ONE_TIME_USE", False)
+)
+"If enabled, each job video token can be used only once."
+
+JOB_VIDEO_DOWNLOAD_MAX_SIZE_BYTES = int(os.getenv("CVAT_JOB_VIDEO_DOWNLOAD_MAX_SIZE_BYTES", 0))
+"""
+Optional maximum allowed job video file size in bytes.
+If <= 0, the size limit is disabled.
+"""
+
+JOB_VIDEO_DOWNLOAD_RATE_LIMIT_BPS = int(os.getenv("CVAT_JOB_VIDEO_DOWNLOAD_RATE_LIMIT_BPS", 0))
+"""
+Optional response transfer rate limit in bytes per second.
+If > 0, sets X-Accel-Limit-Rate for reverse proxies that support it.
+"""
+
+JOB_VIDEO_PREDICTION_REQUEST_TTL_SECONDS = int(
+    os.getenv(
+        "CVAT_JOB_VIDEO_PREDICTION_REQUEST_TTL_SECONDS",
+        default_job_video_prediction_request_ttl,
+    )
+)
+"""
+Video prediction request cache lifetime in seconds.
+Must be between 1 and 24 hours.
+"""
+if not 60 * 60 <= JOB_VIDEO_PREDICTION_REQUEST_TTL_SECONDS <= 24 * 60 * 60:
+    raise ImproperlyConfigured(
+        "JOB_VIDEO_PREDICTION_REQUEST_TTL_SECONDS must be between 3600 and 86400 seconds"
+    )
+
+JOB_VIDEO_PREDICTION_WEBHOOK_GRACE_TIMEOUT_SECONDS = int(
+    os.getenv(
+        "CVAT_JOB_VIDEO_PREDICTION_WEBHOOK_GRACE_TIMEOUT_SECONDS",
+        default_job_video_prediction_webhook_grace_timeout,
+    )
+)
+"""
+Grace timeout for pending video prediction requests before reconciliation triggers.
+Must be > 0 and <= JOB_VIDEO_PREDICTION_REQUEST_TTL_SECONDS.
+"""
+if (
+    JOB_VIDEO_PREDICTION_WEBHOOK_GRACE_TIMEOUT_SECONDS <= 0
+    or JOB_VIDEO_PREDICTION_WEBHOOK_GRACE_TIMEOUT_SECONDS > JOB_VIDEO_PREDICTION_REQUEST_TTL_SECONDS
+):
+    raise ImproperlyConfigured(
+        "JOB_VIDEO_PREDICTION_WEBHOOK_GRACE_TIMEOUT_SECONDS must be > 0 and <= "
+        "JOB_VIDEO_PREDICTION_REQUEST_TTL_SECONDS"
+    )
+
+JOB_VIDEO_PREDICTION_RECONCILIATION_MAX_SCAN = int(
+    os.getenv(
+        "CVAT_JOB_VIDEO_PREDICTION_RECONCILIATION_MAX_SCAN",
+        default_job_video_prediction_reconciliation_max_scan,
+    )
+)
+"Maximum number of recent video prediction requests scanned in each reconciliation run."
+if JOB_VIDEO_PREDICTION_RECONCILIATION_MAX_SCAN < 1:
+    raise ImproperlyConfigured("JOB_VIDEO_PREDICTION_RECONCILIATION_MAX_SCAN must be >= 1")
+
+JOB_VIDEO_PREDICTION_DISPATCH_MODE = os.getenv(
+    "CVAT_JOB_VIDEO_PREDICTION_DISPATCH_MODE",
+    default_job_video_prediction_dispatch_mode,
+).lower()
+"Dispatch mode for outbound video prediction submits. Supported values: queued, parallel."
+if JOB_VIDEO_PREDICTION_DISPATCH_MODE not in {"queued", "parallel"}:
+    raise ImproperlyConfigured(
+        "JOB_VIDEO_PREDICTION_DISPATCH_MODE must be one of: queued, parallel"
+    )
+
+JOB_VIDEO_PREDICTION_MAX_CONCURRENCY_FAST = int(
+    os.getenv(
+        "CVAT_JOB_VIDEO_PREDICTION_MAX_CONCURRENCY_FAST",
+        default_job_video_prediction_max_concurrency_fast,
+    )
+)
+"Maximum concurrent outbound submissions for the fast pathway in parallel mode."
+if JOB_VIDEO_PREDICTION_MAX_CONCURRENCY_FAST < 1:
+    raise ImproperlyConfigured("JOB_VIDEO_PREDICTION_MAX_CONCURRENCY_FAST must be >= 1")
+
+JOB_VIDEO_PREDICTION_MAX_CONCURRENCY_SLOW = int(
+    os.getenv(
+        "CVAT_JOB_VIDEO_PREDICTION_MAX_CONCURRENCY_SLOW",
+        default_job_video_prediction_max_concurrency_slow,
+    )
+)
+"Maximum concurrent outbound submissions for the slow pathway in parallel mode."
+if JOB_VIDEO_PREDICTION_MAX_CONCURRENCY_SLOW < 1:
+    raise ImproperlyConfigured("JOB_VIDEO_PREDICTION_MAX_CONCURRENCY_SLOW must be >= 1")
+
+JOB_VIDEO_PREDICTION_DISPATCH_QUEUE_TIMEOUT_SECONDS = float(
+    os.getenv(
+        "CVAT_JOB_VIDEO_PREDICTION_DISPATCH_QUEUE_TIMEOUT_SECONDS",
+        default_job_video_prediction_dispatch_queue_timeout_seconds,
+    )
+)
+"Timeout waiting for a dispatch slot in the prediction dispatch queue."
+if JOB_VIDEO_PREDICTION_DISPATCH_QUEUE_TIMEOUT_SECONDS <= 0:
+    raise ImproperlyConfigured(
+        "JOB_VIDEO_PREDICTION_DISPATCH_QUEUE_TIMEOUT_SECONDS must be > 0"
+    )
+
+JOB_VIDEO_PREDICTION_DISPATCH_MAX_QUEUE_LENGTH_FAST = int(
+    os.getenv(
+        "CVAT_JOB_VIDEO_PREDICTION_DISPATCH_MAX_QUEUE_LENGTH_FAST",
+        default_job_video_prediction_dispatch_max_queue_length_fast,
+    )
+)
+"Maximum queue length for fast-pathway prediction dispatch waiting slots. 0 disables limit."
+if JOB_VIDEO_PREDICTION_DISPATCH_MAX_QUEUE_LENGTH_FAST < 0:
+    raise ImproperlyConfigured("JOB_VIDEO_PREDICTION_DISPATCH_MAX_QUEUE_LENGTH_FAST must be >= 0")
+
+JOB_VIDEO_PREDICTION_DISPATCH_MAX_QUEUE_LENGTH_SLOW = int(
+    os.getenv(
+        "CVAT_JOB_VIDEO_PREDICTION_DISPATCH_MAX_QUEUE_LENGTH_SLOW",
+        default_job_video_prediction_dispatch_max_queue_length_slow,
+    )
+)
+"Maximum queue length for slow-pathway prediction dispatch waiting slots. 0 disables limit."
+if JOB_VIDEO_PREDICTION_DISPATCH_MAX_QUEUE_LENGTH_SLOW < 0:
+    raise ImproperlyConfigured("JOB_VIDEO_PREDICTION_DISPATCH_MAX_QUEUE_LENGTH_SLOW must be >= 0")
+
+JOB_VIDEO_PREDICTION_DISPATCH_POLL_INTERVAL_SECONDS = float(
+    os.getenv(
+        "CVAT_JOB_VIDEO_PREDICTION_DISPATCH_POLL_INTERVAL_SECONDS",
+        default_job_video_prediction_dispatch_poll_interval_seconds,
+    )
+)
+"Poll interval while waiting for an outbound dispatch slot."
+if JOB_VIDEO_PREDICTION_DISPATCH_POLL_INTERVAL_SECONDS <= 0:
+    raise ImproperlyConfigured(
+        "JOB_VIDEO_PREDICTION_DISPATCH_POLL_INTERVAL_SECONDS must be > 0"
+    )
+
+JOB_VIDEO_PREDICTION_DISPATCH_LEASE_TTL_SECONDS = int(
+    os.getenv(
+        "CVAT_JOB_VIDEO_PREDICTION_DISPATCH_LEASE_TTL_SECONDS",
+        default_job_video_prediction_dispatch_lease_ttl_seconds,
+    )
+)
+"TTL for redis-backed in-flight dispatch counters."
+if JOB_VIDEO_PREDICTION_DISPATCH_LEASE_TTL_SECONDS <= 0:
+    raise ImproperlyConfigured("JOB_VIDEO_PREDICTION_DISPATCH_LEASE_TTL_SECONDS must be > 0")
+
+JOB_VIDEO_PREDICTION_DISPATCH_KEY_PREFIX = os.getenv(
+    "CVAT_JOB_VIDEO_PREDICTION_DISPATCH_KEY_PREFIX",
+    "job-video-prediction:dispatch",
+)
+"Redis key prefix for prediction dispatch counters."
+
+JOB_VIDEO_PREDICTION_FAST_URL = os.getenv("CVAT_JOB_VIDEO_PREDICTION_FAST_URL", "")
+"Outbound remote URL for the 'fast' video prediction pathway."
+
+JOB_VIDEO_PREDICTION_SLOW_URL = os.getenv("CVAT_JOB_VIDEO_PREDICTION_SLOW_URL", "")
+"Outbound remote URL for the 'slow' video prediction pathway."
+
+JOB_VIDEO_PREDICTION_ALLOW_REMOTE_URL_INPUT = to_bool(
+    os.getenv("CVAT_JOB_VIDEO_PREDICTION_ALLOW_REMOTE_URL_INPUT", True)
+)
+"Temporary compatibility flag for legacy submit payloads that include remote_url."
