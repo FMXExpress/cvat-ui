@@ -3381,6 +3381,160 @@ class TaskFileSerializer(serializers.Serializer):
 class ProjectFileSerializer(serializers.Serializer):
     project_file = serializers.FileField()
 
+class JobVideoMetadataSerializer(serializers.Serializer):
+    path = serializers.CharField(max_length=MAX_FILENAME_LENGTH)
+    width = serializers.IntegerField(min_value=1)
+    height = serializers.IntegerField(min_value=1)
+
+class JobVideoFrameHintsSerializer(serializers.Serializer):
+    start_frame = serializers.IntegerField(min_value=0)
+    stop_frame = serializers.IntegerField(min_value=0)
+    frame_step = serializers.IntegerField(min_value=1)
+    included_frames = serializers.ListField(
+        child=serializers.IntegerField(min_value=0),
+        allow_null=True,
+        required=False,
+        help_text='Null means all frames in [start_frame, stop_frame] are included.',
+    )
+    frame_width = serializers.IntegerField(min_value=1)
+    frame_height = serializers.IntegerField(min_value=1)
+
+class JobVideoSourceStorageSerializer(serializers.Serializer):
+    storage = serializers.ChoiceField(choices=models.StorageChoice.choices())
+    storage_method = serializers.ChoiceField(choices=models.StorageMethodChoice.choices())
+    cloud_storage_id = serializers.IntegerField(allow_null=True)
+
+class JobVideoAccessSerializer(serializers.Serializer):
+    job_id = serializers.IntegerField(min_value=1)
+    task_id = serializers.IntegerField(min_value=1)
+    token = serializers.CharField()
+    download_url = serializers.URLField()
+    expires_at = serializers.DateTimeField()
+    source_storage = JobVideoSourceStorageSerializer()
+    media = JobVideoMetadataSerializer()
+    frame_hints = JobVideoFrameHintsSerializer()
+
+class JobVideoPredictionSubmitSerializer(serializers.Serializer):
+    pathway = serializers.ChoiceField(
+        choices=('fast', 'slow'),
+        required=False,
+        help_text="Prediction pathway selector. Supported values: fast, slow.",
+    )
+    profile = serializers.ChoiceField(
+        choices=('fast', 'slow'),
+        source='pathway',
+        required=False,
+        write_only=True,
+        help_text="Alias for pathway.",
+    )
+    remote_url = serializers.URLField(required=False)
+    input = serializers.JSONField()
+
+    def validate(self, attrs):
+        pathway = attrs.get('pathway')
+        remote_url = attrs.get('remote_url')
+
+        if pathway and remote_url:
+            raise serializers.ValidationError(
+                "Provide either 'pathway' (or 'profile') or 'remote_url', not both."
+            )
+
+        if pathway:
+            return attrs
+
+        if remote_url:
+            if not getattr(settings, 'JOB_VIDEO_PREDICTION_ALLOW_REMOTE_URL_INPUT', True):
+                raise serializers.ValidationError(
+                    {
+                        'remote_url': (
+                            "Direct remote_url input is disabled. "
+                            "Use 'pathway' (or 'profile') instead."
+                        )
+                    }
+                )
+
+            warnings.warn(
+                "JobVideoPredictionSubmitSerializer: 'remote_url' is deprecated; "
+                "use 'pathway' (or 'profile') instead.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            return attrs
+
+        raise serializers.ValidationError(
+            "Either 'pathway' (or 'profile') or 'remote_url' must be provided."
+        )
+
+
+class JobVideoPredictionSubmitResponseSerializer(serializers.Serializer):
+    request_id = serializers.UUIDField()
+    webhook_url = serializers.URLField()
+    remote_url = serializers.URLField()
+    remote_status_code = serializers.IntegerField(min_value=100, max_value=599)
+    remote_headers = serializers.DictField(child=serializers.CharField(), default=dict)
+    remote_prediction_id = serializers.CharField(required=False, allow_blank=False)
+    remote_body = serializers.JSONField(required=False, allow_null=True)
+    remote_text = serializers.CharField(required=False, allow_blank=True)
+
+class JobVideoPredictionStatusSerializer(serializers.Serializer):
+    request_id = serializers.UUIDField()
+    state = serializers.ChoiceField(choices=['pending', 'completed', 'failed', 'expired'])
+    webhook_url = serializers.URLField(required=False)
+    remote_prediction_id = serializers.CharField(required=False, allow_blank=False)
+    webhook_payload = serializers.JSONField(required=False, allow_null=True)
+    keyframes = serializers.JSONField(required=False, allow_null=True)
+
+class JobVideoPredictionWebhookRequestSerializer(serializers.Serializer):
+    status = serializers.CharField(required=False, allow_blank=False)
+    keyframes = serializers.JSONField(required=False, allow_null=True)
+
+class JobVideoPredictionRequestListItemSerializer(serializers.Serializer):
+    request_id = serializers.UUIDField()
+    status = serializers.ChoiceField(choices=['pending', 'completed', 'failed', 'expired'])
+    pathway = serializers.CharField()
+    remote_url = serializers.URLField()
+    created_at = serializers.DateTimeField()
+    submitted_at = serializers.DateTimeField(required=False)
+    updated_at = serializers.DateTimeField(required=False)
+    expires_at = serializers.DateTimeField()
+    remote_prediction_id = serializers.CharField(required=False, allow_blank=False)
+    remote_error = serializers.JSONField(required=False, allow_null=True)
+
+class JobVideoPredictionRequestListSerializer(serializers.Serializer):
+    count = serializers.IntegerField(min_value=0)
+    results = JobVideoPredictionRequestListItemSerializer(many=True)
+
+class PredictionDispatchPathwayStatsSerializer(serializers.Serializer):
+    queue_length = serializers.IntegerField(min_value=0)
+    inflight = serializers.IntegerField(min_value=0)
+    slot_limit = serializers.IntegerField(min_value=0)
+    max_queue_length = serializers.IntegerField(min_value=0)
+    configured = serializers.BooleanField()
+
+class PredictionDispatchPathwaysSerializer(serializers.Serializer):
+    fast = PredictionDispatchPathwayStatsSerializer()
+    slow = PredictionDispatchPathwayStatsSerializer()
+    unknown = PredictionDispatchPathwayStatsSerializer()
+
+class PredictionDispatchStatusSerializer(serializers.Serializer):
+    mode = serializers.CharField()
+    queue_timeout_seconds = serializers.FloatField(min_value=0)
+    poll_interval_seconds = serializers.FloatField(min_value=0)
+    lease_ttl_seconds = serializers.IntegerField(min_value=1)
+    pathways = PredictionDispatchPathwaysSerializer()
+    redis_ok = serializers.BooleanField()
+    redis_error = serializers.CharField(required=False, allow_blank=False, allow_null=True)
+
+
+class PredictionDispatchHealthSerializer(serializers.Serializer):
+    redis_ok = serializers.BooleanField()
+    acquire_ok = serializers.BooleanField()
+    latency_ms = serializers.FloatField(min_value=0)
+    details = serializers.JSONField()
+
+class DetailMessageSerializer(serializers.Serializer):
+    detail = serializers.CharField()
+
 
 class CommentReadSerializer(serializers.ModelSerializer):
     owner = BasicUserSerializer(allow_null=True, required=False)

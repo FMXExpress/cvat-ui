@@ -7,16 +7,34 @@ import logging
 import sys
 from contextlib import contextmanager
 from pathlib import Path
+from typing import Any
 
 from django.conf import settings
 
 from cvat.apps.engine.utils import directory_tree
 
 
+def format_log_fields(log_fields: dict[str, Any] | None) -> str:
+    if not log_fields:
+        return ""
+
+    pairs = []
+    for key, value in sorted(log_fields.items()):
+        pairs.append(f"{key}={value!r}")
+    return " ".join(pairs)
+
+
 class _LoggerAdapter(logging.LoggerAdapter):
     def process(self, msg: str, kwargs):
         if msg_prefix := self.extra.get("msg_prefix"):
             msg = msg_prefix + msg
+
+        adapter_fields = self.extra.get("log_fields") or {}
+        record_extra = kwargs.get("extra") or {}
+        record_fields = record_extra.get("log_fields") or {}
+        formatted_fields = format_log_fields({**adapter_fields, **record_fields})
+        if formatted_fields:
+            msg = f"{msg} {formatted_fields}"
         return msg, kwargs
 
 

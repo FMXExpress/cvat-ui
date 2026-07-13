@@ -27,6 +27,8 @@ from pprint import pformat
 from time import sleep
 from typing import BinaryIO
 from unittest import mock
+from urllib.parse import parse_qs, urlparse
+from uuid import UUID, uuid4
 
 import av
 import django_rq
@@ -35,8 +37,12 @@ from azure.core.exceptions import HttpResponseError, ServiceRequestError
 from botocore.exceptions import ClientError, EndpointConnectionError
 from django.conf import settings
 from django.contrib.auth.models import Group, User
+from django.core.cache import cache
+from django.core.management import call_command
 from django.http import FileResponse, HttpResponse
 from django.test import override_settings
+from django.urls import reverse
+from django.utils import timezone
 from pdf2image import convert_from_bytes
 from PIL import Image
 from pycocotools import coco as coco_loader
@@ -66,7 +72,9 @@ from cvat.apps.engine.models import (
     StorageChoice,
     StorageMethodChoice,
     Task,
+    Video,
 )
+from cvat.apps.engine.permissions import JobPermission
 from cvat.apps.engine.tests.utils import (
     ApiTestBase,
     ExportApiTestBase,
@@ -76,6 +84,7 @@ from cvat.apps.engine.tests.utils import (
     generate_video_file,
     get_paginated_collection,
 )
+from cvat.apps.engine.views import JobViewSet
 from cvat.apps.redis_handler.serializers import RequestStatus
 from utils.dataset_manifest import ImageManifestManager, VideoManifestManager
 from utils.dataset_manifest.utils import MemOpenable, PcdReader, find_related_images
@@ -528,6 +537,1714 @@ class JobDataMetaPartialUpdateAPITestCase(ApiTestBase):
             self.client.patch(f"/api/jobs/{self.job.id}/data/meta", data=data, format="json")
             res2 = self.client.get(f"/api/tasks/{self.task.id}")
             self.assertLess(res.data["updated_date"], res2.data["updated_date"])
+
+
+class JobVideoAccessAPITestCase(ApiTestBase):
+    @classmethod
+    def setUpTestData(cls):
+        create_db_users(cls)
+        tasks = create_dummy_db_tasks(cls)
+        cls.job = tasks[0].segment_set.first().job_set.first()
+        cls.other_job = tasks[1].segment_set.first().job_set.first()
+
+    def _set_video_source(self, *, storage: StorageChoice, path: str):
+        self._set_job_video_source(job=self.job, storage=storage, path=path)
+
+    def _set_job_video_source(self, *, job: Job, storage: StorageChoice, path: str):
+        db_data = job.segment.task.data
+        db_data.storage = storage
+        db_data.storage_method = StorageMethodChoice.FILE_SYSTEM
+        db_data.save(update_fields=["storage", "storage_method"])
+
+        Video.objects.update_or_create(
+            data=db_data,
+            defaults={
+                "path": path,
+                "width": 1280,
+                "height": 720,
+            },
+        )
+
+    def test_returns_signed_access_url_for_local_storage(self):
+        self._set_video_source(storage=StorageChoice.LOCAL, path="test_video.mp4")
+
+        video_file = self.job.segment.task.data.get_upload_dirname() / "test_video.mp4"
+        video_file.parent.mkdir(parents=True, exist_ok=True)
+        video_file.write_bytes(b"dummy video")
+
+        with ForceLogin(self.admin, self.client):
+            response = self.client.post(f"/api/jobs/{self.job.id}/video/access")
+
+        assert response.status_code == status.HTTP_200_OK
+        assert response.data["job_id"] == self.job.id
+        assert response.data["task_id"] == self.job.segment.task_id
+        assert response.data["source_storage"]["storage"] == StorageChoice.LOCAL
+        assert response.data["source_storage"]["storage_method"] == StorageMethodChoice.FILE_SYSTEM
+        assert response.data["source_storage"]["cloud_storage_id"] is None
+        assert f"/api/jobs/{self.job.id}/video/download" in response.data["download_url"]
+        assert response.data["frame_hints"]["start_frame"] == self.job.segment.task.data.start_frame
+        assert response.data["frame_hints"]["stop_frame"] == self.job.segment.task.data.stop_frame
+        assert response.data["frame_hints"]["frame_step"] == self.job.segment.task.data.get_frame_step()
+        assert response.data["frame_hints"]["included_frames"] is None
+        assert response.data["frame_hints"]["frame_width"] == 1280
+        assert response.data["frame_hints"]["frame_height"] == 720
+
+    def test_video_access_request_does_not_fail_with_missing_permission_mapping(self):
+        self._set_video_source(storage=StorageChoice.LOCAL, path="owner_video.mp4")
+
+        video_file = self.job.segment.task.data.get_upload_dirname() / "owner_video.mp4"
+        video_file.parent.mkdir(parents=True, exist_ok=True)
+        video_file.write_bytes(b"dummy video")
+
+        with ForceLogin(self.owner, self.client):
+            response = self.client.post(f"/api/jobs/{self.job.id}/video/access")
+
+        assert response.status_code == status.HTTP_200_OK
+
+    def test_video_access_does_not_reference_missing_data_included_frames(self):
+        self._set_video_source(storage=StorageChoice.LOCAL, path="missing_included_frames.mp4")
+        db_data = self.job.segment.task.data
+        if hasattr(db_data, "included_frames"):
+            delattr(db_data, "included_frames")
+
+        video_file = db_data.get_upload_dirname() / "missing_included_frames.mp4"
+        video_file.parent.mkdir(parents=True, exist_ok=True)
+        video_file.write_bytes(b"dummy video")
+
+        with ForceLogin(self.admin, self.client):
+            response = self.client.post(f"/api/jobs/{self.job.id}/video/access")
+
+        assert response.status_code == status.HTTP_200_OK
+        included_frames = response.data["frame_hints"]["included_frames"]
+        assert included_frames is None or (
+            isinstance(included_frames, list)
+            and all(isinstance(frame, int) for frame in included_frames)
+        )
+
+    def test_video_access_scope_resolves_to_view_data(self):
+        request = mock.Mock()
+        request.method = "POST"
+        request.query_params = {}
+        request.data = {}
+
+        view = mock.Mock()
+        view.action = "video_access"
+        view.basename = "job"
+
+        scopes = JobPermission.get_scopes(request=request, view=view, obj=self.job)
+
+        assert JobPermission.Scopes.VIEW_DATA in scopes
+
+    def test_custom_action_scope_mapping_regression(self):
+        action_method_to_expected_scope = {
+            ("video_access", "POST"): JobPermission.Scopes.VIEW_DATA,
+            ("video_predictions", "POST"): JobPermission.Scopes.VIEW_DATA,
+            ("video_prediction_status", "GET"): JobPermission.Scopes.VIEW_DATA,
+            ("video_prediction_requests", "GET"): JobPermission.Scopes.VIEW_DATA,
+            ("video_predictions_webhook", "POST"): JobPermission.Scopes.VIEW_DATA,
+            ("video_predictions_webhook_by_id", "POST"): JobPermission.Scopes.VIEW_DATA,
+            ("metadata", "GET"): JobPermission.Scopes.VIEW_METADATA,
+            ("validation_layout", "PATCH"): JobPermission.Scopes.UPDATE_VALIDATION_LAYOUT,
+        }
+
+        for (action, method), expected_scope in action_method_to_expected_scope.items():
+            with self.subTest(action=action, method=method):
+                request = mock.Mock()
+                request.method = method
+                request.query_params = {}
+                request.data = {}
+
+                view = mock.Mock()
+                view.action = action
+                view.basename = "job"
+
+                scopes = JobPermission.get_scopes(request=request, view=view, obj=self.job)
+
+                assert scopes == [expected_scope]
+
+    def test_rejects_cloud_backed_video_access(self):
+        self._set_video_source(storage=StorageChoice.CLOUD_STORAGE, path="videos/test_video.mp4")
+
+        with ForceLogin(self.admin, self.client):
+            response = self.client.post(f"/api/jobs/{self.job.id}/video/access")
+
+        assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
+        assert "cloud-backed" in response.data
+
+    def test_returns_frame_hints_from_job_segment(self):
+        self._set_video_source(storage=StorageChoice.LOCAL, path="hints.mp4")
+        db_data = self.job.segment.task.data
+        db_segment = self.job.segment
+        db_data.start_frame = 3
+        db_data.stop_frame = 15
+        db_data.frame_filter = "step=3"
+        db_data.save(update_fields=["start_frame", "stop_frame", "frame_filter"])
+        db_segment.frames = [3, 6, 12, 15]
+        db_segment.save(update_fields=["frames"])
+        expected_included_frames = sorted(
+            (frame - db_data.start_frame) // db_data.get_frame_step()
+            for frame in db_segment.frame_set
+        ) or None
+
+        video_file = db_data.get_upload_dirname() / "hints.mp4"
+        video_file.parent.mkdir(parents=True, exist_ok=True)
+        video_file.write_bytes(b"dummy video")
+
+        with ForceLogin(self.admin, self.client):
+            response = self.client.post(f"/api/jobs/{self.job.id}/video/access")
+
+        assert response.status_code == status.HTTP_200_OK
+        assert response.data["frame_hints"] == {
+            "start_frame": 3,
+            "stop_frame": 15,
+            "frame_step": 3,
+            "included_frames": expected_included_frames,
+            "frame_width": 1280,
+            "frame_height": 720,
+        }
+
+    def test_download_rejects_path_outside_share_root(self):
+        self._set_video_source(storage=StorageChoice.SHARE, path="../outside.mp4")
+
+        with ForceLogin(self.admin, self.client):
+            access_response = self.client.post(f"/api/jobs/{self.job.id}/video/access")
+
+        assert access_response.status_code == status.HTTP_200_OK
+        token = access_response.data["token"]
+
+        download_response = self.client.get(
+            f"/api/jobs/{self.job.id}/video/download",
+            {"token": token},
+        )
+        assert download_response.status_code == status.HTTP_404_NOT_FOUND
+
+    @override_settings(JOB_VIDEO_DOWNLOAD_TOKEN_TTL_SECONDS=1)
+    def test_download_rejects_expired_token(self):
+        self._set_video_source(storage=StorageChoice.LOCAL, path="expired_token.mp4")
+
+        video_file = self.job.segment.task.data.get_upload_dirname() / "expired_token.mp4"
+        video_file.parent.mkdir(parents=True, exist_ok=True)
+        video_file.write_bytes(b"video")
+
+        with ForceLogin(self.admin, self.client):
+            access_response = self.client.post(f"/api/jobs/{self.job.id}/video/access")
+        assert access_response.status_code == status.HTTP_200_OK
+
+        with mock.patch("django.core.signing.time.time", return_value=10_000):
+            expired_token = access_response.data["token"]
+            with mock.patch("django.core.signing.time.time", return_value=10_010):
+                download_response = self.client.get(
+                    f"/api/jobs/{self.job.id}/video/download",
+                    {"token": expired_token},
+                )
+
+        assert download_response.status_code == status.HTTP_410_GONE
+
+    @override_settings(JOB_VIDEO_DOWNLOAD_TOKEN_ONE_TIME_USE=True)
+    def test_download_rejects_replayed_token_when_one_time_enabled(self):
+        self._set_video_source(storage=StorageChoice.LOCAL, path="one_time_token.mp4")
+
+        video_file = self.job.segment.task.data.get_upload_dirname() / "one_time_token.mp4"
+        video_file.parent.mkdir(parents=True, exist_ok=True)
+        video_file.write_bytes(b"video")
+
+        with ForceLogin(self.admin, self.client):
+            access_response = self.client.post(f"/api/jobs/{self.job.id}/video/access")
+        assert access_response.status_code == status.HTTP_200_OK
+        token = access_response.data["token"]
+
+        first_download_response = self.client.get(
+            f"/api/jobs/{self.job.id}/video/download",
+            {"token": token},
+        )
+        assert first_download_response.status_code == status.HTTP_200_OK
+
+        second_download_response = self.client.get(
+            f"/api/jobs/{self.job.id}/video/download",
+            {"token": token},
+        )
+        assert second_download_response.status_code == status.HTTP_403_FORBIDDEN
+
+    def test_download_streams_expected_body_and_content_length_for_default_backend(self):
+        self._set_video_source(storage=StorageChoice.LOCAL, path="streamed_video.mp4")
+        expected_payload = b"0123456789-video-payload"
+
+        video_file = self.job.segment.task.data.get_upload_dirname() / "streamed_video.mp4"
+        video_file.parent.mkdir(parents=True, exist_ok=True)
+        video_file.write_bytes(expected_payload)
+
+        with ForceLogin(self.admin, self.client):
+            access_response = self.client.post(f"/api/jobs/{self.job.id}/video/access")
+        assert access_response.status_code == status.HTTP_200_OK
+
+        download_response = self.client.get(
+            f"/api/jobs/{self.job.id}/video/download",
+            {"token": access_response.data["token"]},
+        )
+        assert download_response.status_code == status.HTTP_200_OK
+        assert b"".join(download_response.streaming_content) == expected_payload
+        assert int(download_response["Content-Length"]) == len(expected_payload)
+
+    def test_download_rejects_token_for_different_job(self):
+        self._set_job_video_source(job=self.job, storage=StorageChoice.LOCAL, path="job1.mp4")
+        self._set_job_video_source(job=self.other_job, storage=StorageChoice.LOCAL, path="job2.mp4")
+
+        job1_file = self.job.segment.task.data.get_upload_dirname() / "job1.mp4"
+        job1_file.parent.mkdir(parents=True, exist_ok=True)
+        job1_file.write_bytes(b"job1")
+
+        job2_file = self.other_job.segment.task.data.get_upload_dirname() / "job2.mp4"
+        job2_file.parent.mkdir(parents=True, exist_ok=True)
+        job2_file.write_bytes(b"job2")
+
+        with ForceLogin(self.admin, self.client):
+            access_response = self.client.post(f"/api/jobs/{self.job.id}/video/access")
+        assert access_response.status_code == status.HTTP_200_OK
+
+        token = access_response.data["token"]
+        unauthorized_response = self.client.get(
+            f"/api/jobs/{self.other_job.id}/video/download",
+            {"token": token},
+        )
+        assert unauthorized_response.status_code == status.HTTP_403_FORBIDDEN
+
+    def test_video_prediction_status_returns_pending(self):
+        request_id = uuid4()
+        cache.set(
+            f"job-video-prediction:req:{request_id}:meta",
+            {
+                "job_id": self.job.id,
+                "user_id": self.admin.id,
+                "remote_url": "http://example.com",
+                "webhook_url": "https://example.com/webhook/pending",
+                "created_at": timezone.now().isoformat(),
+            },
+            timeout=3600,
+        )
+        cache.set(
+            f"job-video-prediction:req:{request_id}:result",
+            {
+                "job_id": self.job.id,
+                "status": "pending",
+            },
+            timeout=3600,
+        )
+
+        with ForceLogin(self.admin, self.client):
+            response = self.client.get(f"/api/jobs/{self.job.id}/video/predictions/{request_id}")
+
+        assert response.status_code == status.HTTP_200_OK
+        assert response.data["state"] == "pending"
+        assert response.data["request_id"] == str(request_id)
+        assert response.data["webhook_url"] == "https://example.com/webhook/pending"
+
+    @override_settings(
+        JOB_VIDEO_PREDICTION_FAST_URL="https://fast.remote.example",
+        JOB_VIDEO_PREDICTION_SLOW_URL="https://slow.remote.example",
+    )
+    def test_video_predictions_submit_accepted_response_includes_request_metadata_and_remote_prediction_id(
+        self,
+    ):
+        for remote_content, remote_json, expect_remote_prediction_id in (
+            (
+                b'{"id": "remote-123"}',
+                {"id": "remote-123"},
+                "remote-123",
+            ),
+            (
+                b"{}",
+                {},
+                None,
+            ),
+        ):
+            with self.subTest(expect_remote_prediction_id=expect_remote_prediction_id):
+                remote_response = mock.Mock()
+                remote_response.status_code = status.HTTP_202_ACCEPTED
+                remote_response.headers = {
+                    "Content-Type": "application/json",
+                    "X-Request-Id": "remote-request-456",
+                    "Location": "https://fast.remote.example/predictions/remote-123",
+                }
+                remote_response.content = remote_content
+                remote_response.json.return_value = remote_json
+
+                session = mock.Mock()
+                session.post.return_value = remote_response
+                session_ctx = mock.Mock()
+                session_ctx.__enter__ = mock.Mock(return_value=session)
+                session_ctx.__exit__ = mock.Mock(return_value=None)
+                dispatch_lease = mock.Mock(
+                    mode="queued",
+                    pathway="https://fast.remote.example/predictions",
+                    queue_wait_ms=0,
+                    inflight_count=1,
+                )
+                dispatcher = mock.Mock()
+                dispatcher.acquire.return_value.__enter__ = mock.Mock(return_value=dispatch_lease)
+                dispatcher.acquire.return_value.__exit__ = mock.Mock(return_value=None)
+
+                with mock.patch(
+                    "cvat.apps.engine.views.get_prediction_dispatcher", return_value=dispatcher
+                ), mock.patch("cvat.apps.engine.views.make_requests_session", return_value=session_ctx):
+                    with ForceLogin(self.admin, self.client):
+                        response = self.client.post(
+                            f"/api/jobs/{self.job.id}/video/predictions",
+                            data={"pathway": "fast", "input": {"job_id": self.job.id}},
+                            format="json",
+                        )
+
+                assert response.status_code == status.HTTP_202_ACCEPTED
+                assert "request_id" in response.data
+                assert "webhook_url" in response.data
+                assert response.data["remote_status_code"] == status.HTTP_202_ACCEPTED
+                assert response.data["remote_url"] == "https://fast.remote.example/predictions"
+                assert response.data["remote_headers"]["x-request-id"] == "remote-request-456"
+                assert response.data["remote_headers"]["location"] == (
+                    "https://fast.remote.example/predictions/remote-123"
+                )
+
+                if expect_remote_prediction_id is None:
+                    assert "remote_prediction_id" not in response.data
+                else:
+                    assert response.data["remote_prediction_id"] == expect_remote_prediction_id
+
+                cache.delete(f"job-video-prediction:req:{response.data['request_id']}:meta")
+                cache.delete(f"job-video-prediction:req:{response.data['request_id']}:result")
+
+    @override_settings(
+        JOB_VIDEO_PREDICTION_FAST_URL="https://fast.remote.example",
+        JOB_VIDEO_PREDICTION_SLOW_URL="https://slow.remote.example",
+    )
+    def test_video_predictions_submit_returns_request_id_and_checks_permissions(self):
+        remote_response = mock.Mock()
+        remote_response.status_code = status.HTTP_202_ACCEPTED
+        remote_response.headers = {
+            "Location": "https://remote.example/predictions/remote-123",
+            "Content-Type": "application/json",
+            "X-Request-Id": "remote-req-id",
+            "Retry-After": "3",
+        }
+        remote_response.content = b'{"id": "remote-123"}'
+        remote_response.json.return_value = {"id": "remote-123"}
+
+        session = mock.Mock()
+        session.post.return_value = remote_response
+        session_ctx = mock.Mock()
+        session_ctx.__enter__ = mock.Mock(return_value=session)
+        session_ctx.__exit__ = mock.Mock(return_value=None)
+        dispatch_lease = mock.Mock(
+            mode="queued",
+            pathway="https://fast.remote.example/predictions",
+            queue_wait_ms=0,
+            inflight_count=1,
+        )
+        dispatcher = mock.Mock()
+        dispatcher.acquire.return_value.__enter__ = mock.Mock(return_value=dispatch_lease)
+        dispatcher.acquire.return_value.__exit__ = mock.Mock(return_value=None)
+
+        with mock.patch("cvat.apps.engine.views.get_prediction_dispatcher", return_value=dispatcher), mock.patch(
+            "cvat.apps.engine.views.make_requests_session", return_value=session_ctx
+        ):
+            with ForceLogin(self.admin, self.client):
+                response = self.client.post(
+                    f"/api/jobs/{self.job.id}/video/predictions",
+                    data={"pathway": "fast", "input": {"job_id": self.job.id}},
+                    format="json",
+                )
+
+        assert response.status_code == status.HTTP_202_ACCEPTED
+        assert "request_id" in response.data
+        assert "webhook_url" in response.data
+
+        request_id = response.data["request_id"]
+        webhook_url = response.data["webhook_url"]
+        parsed_webhook_url = urlparse(webhook_url)
+        assert (
+            f"/api/jobs/{self.job.id}/video/predictions/webhook/{request_id}"
+            in parsed_webhook_url.path
+        )
+        UUID(parsed_webhook_url.path.rsplit("/", maxsplit=1)[-1])
+        assert parsed_webhook_url.path == reverse(
+            "job-video-predictions-webhook-by-id",
+            kwargs={"pk": self.job.id, "request_id": request_id},
+        )
+
+        with ForceLogin(self.somebody, self.client):
+            forbidden_response = self.client.post(
+                f"/api/jobs/{self.job.id}/video/predictions",
+                data={"pathway": "fast", "input": {"job_id": self.job.id}},
+                format="json",
+            )
+
+        assert forbidden_response.status_code == status.HTTP_403_FORBIDDEN
+
+    @override_settings(
+        JOB_VIDEO_PREDICTION_FAST_URL="https://fast.remote.example/v1",
+        JOB_VIDEO_PREDICTION_SLOW_URL="https://slow.remote.example/v1",
+    )
+    def test_video_predictions_submit_sends_respond_async_and_expected_json_shape(self):
+        remote_response = mock.Mock()
+        remote_response.status_code = status.HTTP_202_ACCEPTED
+        remote_response.headers = {"Content-Type": "application/json"}
+        remote_response.content = b'{}'
+        remote_response.json.return_value = {}
+
+        session = mock.Mock()
+        session.post.return_value = remote_response
+        session_ctx = mock.Mock()
+        session_ctx.__enter__ = mock.Mock(return_value=session)
+        session_ctx.__exit__ = mock.Mock(return_value=None)
+        dispatch_lease = mock.Mock(
+            mode="queued",
+            pathway="https://fast.remote.example/v1/predictions",
+            queue_wait_ms=0,
+            inflight_count=1,
+        )
+        dispatcher = mock.Mock()
+        dispatcher.acquire.return_value.__enter__ = mock.Mock(return_value=dispatch_lease)
+        dispatcher.acquire.return_value.__exit__ = mock.Mock(return_value=None)
+
+        with mock.patch("cvat.apps.engine.views.get_prediction_dispatcher", return_value=dispatcher), mock.patch(
+            "cvat.apps.engine.views.make_requests_session", return_value=session_ctx
+        ):
+            with ForceLogin(self.admin, self.client):
+                response = self.client.post(
+                    f"/api/jobs/{self.job.id}/video/predictions",
+                    data={
+                        "profile": "fast",
+                        "input": {"foo": "bar", "nested": {"a": 1}},
+                    },
+                    format="json",
+                )
+
+        assert response.status_code == status.HTTP_202_ACCEPTED
+        post_call = session.post.call_args
+        assert post_call is not None
+        assert post_call.args[0] == "https://fast.remote.example/v1/predictions"
+        assert post_call.kwargs["headers"]["Prefer"] == "respond-async"
+        assert post_call.kwargs["headers"]["Content-Type"] == "application/json"
+        assert post_call.kwargs["json"]["input"] == {"foo": "bar", "nested": {"a": 1}}
+        assert "webhook" in post_call.kwargs["json"]
+        webhook_url = post_call.kwargs["json"]["webhook"]
+        assert str(self.job.id) in webhook_url
+        parsed_webhook_url = urlparse(webhook_url)
+        assert f"/api/jobs/{self.job.id}/video/predictions/webhook/" in parsed_webhook_url.path
+        UUID(parsed_webhook_url.path.rsplit("/", maxsplit=1)[-1])
+
+        query = parse_qs(parsed_webhook_url.query)
+        assert "token" in query
+        assert query["token"][0]
+
+    @override_settings(
+        JOB_VIDEO_PREDICTION_FAST_URL="https://fast.remote.example",
+        JOB_VIDEO_PREDICTION_SLOW_URL="https://slow.remote.example",
+    )
+    def test_video_predictions_submit_202_accepted_stores_pending_result(self):
+        remote_response = mock.Mock()
+        remote_response.status_code = status.HTTP_202_ACCEPTED
+        remote_response.headers = {"Content-Type": "application/json"}
+        remote_response.content = b'{"id": "remote-123"}'
+        remote_response.json.return_value = {"id": "remote-123"}
+
+        session = mock.Mock()
+        session.post.return_value = remote_response
+        session_ctx = mock.Mock()
+        session_ctx.__enter__ = mock.Mock(return_value=session)
+        session_ctx.__exit__ = mock.Mock(return_value=None)
+        dispatch_lease = mock.Mock(
+            mode="queued",
+            pathway="https://fast.remote.example/predictions",
+            queue_wait_ms=0,
+            inflight_count=1,
+        )
+        dispatcher = mock.Mock()
+        dispatcher.acquire.return_value.__enter__ = mock.Mock(return_value=dispatch_lease)
+        dispatcher.acquire.return_value.__exit__ = mock.Mock(return_value=None)
+
+        with mock.patch("cvat.apps.engine.views.get_prediction_dispatcher", return_value=dispatcher), mock.patch(
+            "cvat.apps.engine.views.make_requests_session", return_value=session_ctx
+        ):
+            with ForceLogin(self.admin, self.client):
+                response = self.client.post(
+                    f"/api/jobs/{self.job.id}/video/predictions",
+                    data={"pathway": "fast", "input": {"job_id": self.job.id}},
+                    format="json",
+                )
+
+        assert response.status_code == status.HTTP_202_ACCEPTED
+        request_id = response.data["request_id"]
+        stored_result = cache.get(f"job-video-prediction:req:{request_id}:result")
+        assert stored_result is not None
+        assert stored_result["status"] == "pending"
+
+    def test_video_prediction_reconciliation_marks_stale_pending_as_webhook_timeout(self):
+        request_id = uuid4()
+        created_at = timezone.now() - timedelta(hours=2)
+        expires_at = timezone.now() + timedelta(hours=1)
+        cache.set(
+            "job-video-prediction:requests:recent",
+            [
+                {
+                    "request_id": str(request_id),
+                    "job_id": self.job.id,
+                    "pathway": "fast",
+                    "remote_url": "https://fast.remote.example/predictions",
+                    "created_at": created_at.isoformat(),
+                    "expires_at": expires_at.isoformat(),
+                }
+            ],
+            timeout=3600,
+        )
+        cache.set(
+            f"job-video-prediction:req:{request_id}:meta",
+            {
+                "job_id": self.job.id,
+                "remote_url": "https://fast.remote.example/predictions",
+                "created_at": created_at.isoformat(),
+                "expires_at": expires_at.isoformat(),
+            },
+            timeout=3600,
+        )
+        cache.set(
+            f"job-video-prediction:req:{request_id}:result",
+            {
+                "job_id": self.job.id,
+                "status": "pending",
+                "submitted_at": created_at.isoformat(),
+                "expires_at": expires_at.isoformat(),
+            },
+            timeout=3600,
+        )
+
+        stats = JobViewSet.reconcile_pending_video_prediction_requests(limit=100)
+
+        stored_result = cache.get(f"job-video-prediction:req:{request_id}:result")
+        assert stats["timed_out"] == 1
+        assert stored_result["status"] == "failed"
+        assert stored_result["error"] == "webhook_timeout"
+        assert stored_result["reconciliation"]["event"] == "webhook_timeout"
+
+    def test_video_prediction_reconciliation_polls_provider_status_when_remote_id_exists(self):
+        request_id = uuid4()
+        created_at = timezone.now() - timedelta(hours=2)
+        expires_at = timezone.now() + timedelta(hours=1)
+        cache.set(
+            "job-video-prediction:requests:recent",
+            [
+                {
+                    "request_id": str(request_id),
+                    "job_id": self.job.id,
+                    "pathway": "fast",
+                    "remote_url": "https://fast.remote.example/predictions",
+                    "created_at": created_at.isoformat(),
+                    "expires_at": expires_at.isoformat(),
+                }
+            ],
+            timeout=3600,
+        )
+        cache.set(
+            f"job-video-prediction:req:{request_id}:meta",
+            {
+                "job_id": self.job.id,
+                "remote_url": "https://fast.remote.example/predictions",
+                "created_at": created_at.isoformat(),
+                "expires_at": expires_at.isoformat(),
+                "submit_response": {"headers": {"location": "https://fast.remote.example/predictions/remote-123"}},
+            },
+            timeout=3600,
+        )
+        cache.set(
+            f"job-video-prediction:req:{request_id}:result",
+            {
+                "job_id": self.job.id,
+                "status": "pending",
+                "submitted_at": created_at.isoformat(),
+                "expires_at": expires_at.isoformat(),
+                "remote_prediction_id": "remote-123",
+            },
+            timeout=3600,
+        )
+
+        remote_response = mock.Mock()
+        remote_response.status_code = status.HTTP_200_OK
+        remote_response.content = b'{"status": "completed"}'
+        remote_response.json.return_value = {"status": "completed"}
+        session = mock.Mock()
+        session.get.return_value = remote_response
+        session_ctx = mock.Mock()
+        session_ctx.__enter__ = mock.Mock(return_value=session)
+        session_ctx.__exit__ = mock.Mock(return_value=None)
+
+        with mock.patch("cvat.apps.engine.views.make_requests_session", return_value=session_ctx):
+            stats = JobViewSet.reconcile_pending_video_prediction_requests(limit=100)
+
+        stored_result = cache.get(f"job-video-prediction:req:{request_id}:result")
+        assert stats["reconciled"] == 1
+        assert stored_result["status"] == "completed"
+        assert stored_result["reconciliation"]["event"] == "reconciled"
+        assert stored_result["reconciliation"]["reason"] == "provider_status_poll"
+        session.get.assert_called_once()
+
+    def test_video_prediction_reconciliation_management_command_runs(self):
+        with mock.patch(
+            "cvat.apps.engine.management.commands.reconcile_video_predictions.JobViewSet.reconcile_pending_video_prediction_requests",
+            return_value={"scanned": 1, "stale": 1, "reconciled": 1, "timed_out": 0, "skipped": 0},
+        ) as mocked_reconcile:
+            call_command("reconcile_video_predictions", "--limit", "10")
+        mocked_reconcile.assert_called_once_with(limit=10)
+
+    @override_settings(
+        JOB_VIDEO_PREDICTION_FAST_URL="https://fast.remote.example",
+        JOB_VIDEO_PREDICTION_SLOW_URL="https://slow.remote.example",
+    )
+    def test_video_predictions_submit_rejects_unaccepted_remote_submit_status(self):
+        for remote_status, content_type, content, remote_json, expected_remote_error in (
+            (
+                status.HTTP_400_BAD_REQUEST,
+                "application/json",
+                b'{"error": "bad request", "token": "do-not-expose"}',
+                {"error": "bad request", "token": "do-not-expose"},
+                {"error": "bad request", "token": "[REDACTED]"},
+            ),
+            (
+                status.HTTP_500_INTERNAL_SERVER_ERROR,
+                "text/plain",
+                b"service failed",
+                ValueError("not json"),
+                "service failed",
+            ),
+        ):
+            with self.subTest(remote_status=remote_status, content_type=content_type):
+                remote_response = mock.Mock()
+                remote_response.status_code = remote_status
+                remote_response.headers = {"Content-Type": content_type}
+                remote_response.content = content
+                if isinstance(remote_json, Exception):
+                    remote_response.json.side_effect = remote_json
+                else:
+                    remote_response.json.return_value = remote_json
+                remote_response.text = content.decode("utf-8")
+
+                session = mock.Mock()
+                session.post.return_value = remote_response
+                session_ctx = mock.Mock()
+                session_ctx.__enter__ = mock.Mock(return_value=session)
+                session_ctx.__exit__ = mock.Mock(return_value=None)
+                dispatch_lease = mock.Mock(
+                    mode="queued",
+                    pathway="https://fast.remote.example/predictions",
+                    queue_wait_ms=0,
+                    inflight_count=1,
+                )
+                dispatcher = mock.Mock()
+                dispatcher.acquire.return_value.__enter__ = mock.Mock(return_value=dispatch_lease)
+                dispatcher.acquire.return_value.__exit__ = mock.Mock(return_value=None)
+
+                with mock.patch("cvat.apps.engine.views.get_prediction_dispatcher", return_value=dispatcher), mock.patch(
+                    "cvat.apps.engine.views.make_requests_session", return_value=session_ctx
+                ):
+                    with ForceLogin(self.admin, self.client):
+                        response = self.client.post(
+                            f"/api/jobs/{self.job.id}/video/predictions",
+                            data={"pathway": "fast", "input": {"job_id": self.job.id}},
+                            format="json",
+                        )
+
+                assert response.status_code == status.HTTP_502_BAD_GATEWAY
+                assert response.data["remote_status_code"] == remote_status
+                assert "request_id" in response.data
+                assert response.data["remote_error"] == expected_remote_error
+
+                request_id = response.data["request_id"]
+                stored_result = cache.get(f"job-video-prediction:req:{request_id}:result")
+                assert stored_result is not None
+                assert stored_result["status"] == "failed"
+                assert stored_result["remote_submit"]["status_code"] == remote_status
+                if isinstance(remote_json, dict):
+                    assert stored_result["remote_submit"]["body"] == remote_json
+                else:
+                    assert stored_result["remote_submit"]["text"] == "service failed"
+
+                cache.delete(f"job-video-prediction:req:{request_id}:meta")
+                cache.delete(f"job-video-prediction:req:{request_id}:result")
+
+    @override_settings(
+        JOB_VIDEO_PREDICTION_FAST_URL="https://fast.remote.example",
+        JOB_VIDEO_PREDICTION_SLOW_URL="https://slow.remote.example",
+    )
+    def test_video_predictions_submit_stores_ephemeral_status_with_pathway_and_expiration(self):
+        remote_response = mock.Mock()
+        remote_response.status_code = status.HTTP_202_ACCEPTED
+        remote_response.headers = {"Content-Type": "application/json"}
+        remote_response.content = b"{}"
+        remote_response.json.return_value = {}
+
+        session = mock.Mock()
+        session.post.return_value = remote_response
+        session_ctx = mock.Mock()
+        session_ctx.__enter__ = mock.Mock(return_value=session)
+        session_ctx.__exit__ = mock.Mock(return_value=None)
+        dispatch_lease = mock.Mock(
+            mode="queued",
+            pathway="https://fast.remote.example/predictions",
+            queue_wait_ms=0,
+            inflight_count=1,
+        )
+        dispatcher = mock.Mock()
+        dispatcher.acquire.return_value.__enter__ = mock.Mock(return_value=dispatch_lease)
+        dispatcher.acquire.return_value.__exit__ = mock.Mock(return_value=None)
+
+        with mock.patch("cvat.apps.engine.views.get_prediction_dispatcher", return_value=dispatcher), mock.patch(
+            "cvat.apps.engine.views.make_requests_session", return_value=session_ctx
+        ):
+            with ForceLogin(self.admin, self.client):
+                response = self.client.post(
+                    f"/api/jobs/{self.job.id}/video/predictions",
+                    data={"pathway": "fast", "input": {"job_id": self.job.id}},
+                    format="json",
+                )
+
+        assert response.status_code == status.HTTP_202_ACCEPTED
+        request_id = response.data["request_id"]
+
+        stored_metadata = cache.get(f"job-video-prediction:req:{request_id}:meta")
+        stored_result = cache.get(f"job-video-prediction:req:{request_id}:result")
+        assert stored_metadata is not None
+        assert stored_result is not None
+        assert stored_metadata["pathway"] == "fast"
+        assert stored_metadata["attempts"] == 1
+        assert stored_result["pathway"] == "fast"
+        assert stored_result["attempts"] == 1
+        assert stored_metadata["expires_at"]
+        assert stored_result["expires_at"] == stored_metadata["expires_at"]
+
+    @override_settings(
+        JOB_VIDEO_PREDICTION_FAST_URL="https://fast.remote.example",
+        JOB_VIDEO_PREDICTION_SLOW_URL="https://slow.remote.example",
+    )
+    def test_video_predictions_submit_pathway_validation_errors(self):
+        with ForceLogin(self.admin, self.client):
+            missing_pathway_response = self.client.post(
+                f"/api/jobs/{self.job.id}/video/predictions",
+                data={"input": {"foo": "bar"}},
+                format="json",
+            )
+        assert missing_pathway_response.status_code == status.HTTP_400_BAD_REQUEST
+        assert "Either 'pathway' (or 'profile') or 'remote_url' must be provided." in str(
+            missing_pathway_response.data
+        )
+
+        with ForceLogin(self.admin, self.client):
+            invalid_pathway_response = self.client.post(
+                f"/api/jobs/{self.job.id}/video/predictions",
+                data={"pathway": "turbo", "input": {"foo": "bar"}},
+                format="json",
+            )
+        assert invalid_pathway_response.status_code == status.HTTP_400_BAD_REQUEST
+        assert "pathway" in invalid_pathway_response.data
+
+        with ForceLogin(self.admin, self.client):
+            mixed_payload_response = self.client.post(
+                f"/api/jobs/{self.job.id}/video/predictions",
+                data={
+                    "pathway": "fast",
+                    "remote_url": "https://legacy.remote.example",
+                    "input": {"foo": "bar"},
+                },
+                format="json",
+            )
+        assert mixed_payload_response.status_code == status.HTTP_400_BAD_REQUEST
+        assert "Provide either 'pathway' (or 'profile') or 'remote_url', not both." in str(
+            mixed_payload_response.data
+        )
+
+    @override_settings(
+        JOB_VIDEO_PREDICTION_ALLOW_REMOTE_URL_INPUT=False,
+        JOB_VIDEO_PREDICTION_FAST_URL="https://fast.remote.example",
+        JOB_VIDEO_PREDICTION_SLOW_URL="https://slow.remote.example",
+    )
+    def test_video_predictions_submit_rejects_legacy_remote_url_when_disabled(self):
+        with ForceLogin(self.admin, self.client):
+            response = self.client.post(
+                f"/api/jobs/{self.job.id}/video/predictions",
+                data={
+                    "remote_url": "https://legacy.remote.example/predictions",
+                    "input": {"foo": "bar"},
+                },
+                format="json",
+            )
+
+        assert response.status_code == status.HTTP_400_BAD_REQUEST
+        assert "remote_url" in response.data
+
+    def test_video_predictions_webhook_stores_payload_for_matching_request_id(self):
+        request_id = uuid4()
+        cache.set(
+            f"job-video-prediction:req:{request_id}:meta",
+            {
+                "job_id": self.job.id,
+                "user_id": self.admin.id,
+                "remote_url": "http://example.com",
+                "webhook_url": "https://example.com/webhook/completed",
+                "created_at": timezone.now().isoformat(),
+            },
+            timeout=3600,
+        )
+        cache.set(
+            f"job-video-prediction:req:{request_id}:result",
+            {
+                "job_id": self.job.id,
+                "status": "pending",
+            },
+            timeout=3600,
+        )
+
+        webhook_token = JobViewSet._make_video_prediction_webhook_token(
+            request_id=request_id,
+            job_id=self.job.id,
+        )
+        webhook_payload = {"status": "completed", "keyframes": [{"frame": 5, "score": 0.98}]}
+
+        response = self.client.post(
+            f"/api/jobs/{self.job.id}/video/predictions/webhook/{request_id}",
+            data=webhook_payload,
+            format="json",
+            QUERY_STRING=f"token={webhook_token}",
+        )
+
+        assert response.status_code == status.HTTP_202_ACCEPTED
+
+        stored_result = cache.get(f"job-video-prediction:req:{request_id}:result")
+        assert stored_result is not None
+        assert stored_result["status"] == "completed"
+        assert stored_result["webhook_payload"] == webhook_payload
+
+
+    @override_settings(DEBUG=True)
+    def test_video_predictions_webhook_duplicate_after_completion_is_idempotent(self):
+        request_id = uuid4()
+        created_at = timezone.now().isoformat()
+        cache.set(
+            f"job-video-prediction:req:{request_id}:meta",
+            {
+                "job_id": self.job.id,
+                "user_id": self.admin.id,
+                "remote_url": "http://example.com",
+                "created_at": created_at,
+            },
+            timeout=3600,
+        )
+        payload = {"status": "completed", "output": {"keyframes": [{"frame": 5, "score": 0.98}]}}
+        cache.set(
+            f"job-video-prediction:req:{request_id}:result",
+            {
+                "job_id": self.job.id,
+                "status": "completed",
+                "webhook_payload": payload,
+            },
+            timeout=3600,
+        )
+
+        webhook_token = JobViewSet._make_video_prediction_webhook_token(
+            request_id=request_id,
+            job_id=self.job.id,
+        )
+
+        response = self.client.post(
+            f"/api/jobs/{self.job.id}/video/predictions/webhook/{request_id}",
+            data=payload,
+            format="json",
+            QUERY_STRING=f"token={webhook_token}",
+        )
+
+        assert response.status_code == status.HTTP_202_ACCEPTED
+        assert response.data["decision"] == "ignored_duplicate"
+        assert response.data["previous_effective_state"] == "completed"
+        assert response.data["incoming_raw_status"] == "completed"
+        assert response.data["inferred_incoming_state"] == "completed"
+        assert response.data["http_code"] == status.HTTP_202_ACCEPTED
+        stored_result = cache.get(f"job-video-prediction:req:{request_id}:result")
+        assert stored_result["status"] == "completed"
+        assert stored_result["webhook_payload"] == payload
+
+    def test_video_predictions_webhook_late_richer_payload_is_merged(self):
+        request_id = uuid4()
+        cache.set(
+            f"job-video-prediction:req:{request_id}:meta",
+            {
+                "job_id": self.job.id,
+                "user_id": self.admin.id,
+                "remote_url": "http://example.com",
+                "created_at": timezone.now().isoformat(),
+            },
+            timeout=3600,
+        )
+        initial_payload = {"status": "completed", "output": {"summary": "ready"}}
+        cache.set(
+            f"job-video-prediction:req:{request_id}:result",
+            {
+                "job_id": self.job.id,
+                "status": "completed",
+                "webhook_payload": initial_payload,
+            },
+            timeout=3600,
+        )
+
+        richer_payload = {
+            "status": "completed",
+            "output": {"summary": "ready", "keyframes": [{"frame": 7}]},
+            "selected_indices": [0, 7],
+            "candidate_indices": [0, 4, 7],
+            "error": {"detail": "partial confidence drop"},
+        }
+        webhook_token = JobViewSet._make_video_prediction_webhook_token(
+            request_id=request_id,
+            job_id=self.job.id,
+        )
+        response = self.client.post(
+            f"/api/jobs/{self.job.id}/video/predictions/webhook/{request_id}",
+            data=richer_payload,
+            format="json",
+            QUERY_STRING=f"token={webhook_token}",
+        )
+
+        assert response.status_code == status.HTTP_202_ACCEPTED
+        stored_result = cache.get(f"job-video-prediction:req:{request_id}:result")
+        assert stored_result["status"] == "completed"
+        assert stored_result["webhook_payload"]["selected_indices"] == [0, 7]
+        assert stored_result["webhook_payload"]["candidate_indices"] == [0, 4, 7]
+        assert stored_result["webhook_payload"]["output"]["summary"] == "ready"
+        assert stored_result["webhook_payload"]["output"]["keyframes"] == [{"frame": 7}]
+        assert stored_result["webhook_payload"]["error"] == {"detail": "partial confidence drop"}
+
+    def test_video_predictions_webhook_conflicting_late_payload_keeps_terminal_status(self):
+        request_id = uuid4()
+        cache.set(
+            f"job-video-prediction:req:{request_id}:meta",
+            {
+                "job_id": self.job.id,
+                "user_id": self.admin.id,
+                "remote_url": "http://example.com",
+                "created_at": timezone.now().isoformat(),
+            },
+            timeout=3600,
+        )
+        existing_payload = {"status": "completed", "output": {"labels": ["car"]}}
+        cache.set(
+            f"job-video-prediction:req:{request_id}:result",
+            {
+                "job_id": self.job.id,
+                "status": "completed",
+                "webhook_payload": existing_payload,
+            },
+            timeout=3600,
+        )
+
+        conflicting_payload = {
+            "status": "failed",
+            "error": {"detail": "remote failed"},
+            "output": {"labels": ["person"]},
+        }
+        webhook_token = JobViewSet._make_video_prediction_webhook_token(
+            request_id=request_id,
+            job_id=self.job.id,
+        )
+        response = self.client.post(
+            f"/api/jobs/{self.job.id}/video/predictions/webhook/{request_id}",
+            data=conflicting_payload,
+            format="json",
+            QUERY_STRING=f"token={webhook_token}",
+        )
+
+        assert response.status_code == status.HTTP_202_ACCEPTED
+        stored_result = cache.get(f"job-video-prediction:req:{request_id}:result")
+        assert stored_result["status"] == "completed"
+        assert stored_result["webhook_payload"]["output"] == {"labels": ["car"]}
+        assert "error" not in stored_result["webhook_payload"]
+
+    def test_video_prediction_status_is_pending_before_webhook_and_completed_after_webhook(self):
+        request_id = uuid4()
+        cache.set(
+            f"job-video-prediction:req:{request_id}:meta",
+            {
+                "job_id": self.job.id,
+                "user_id": self.admin.id,
+                "remote_url": "http://example.com",
+                "webhook_url": "https://example.com/webhook/completed",
+                "created_at": timezone.now().isoformat(),
+            },
+            timeout=3600,
+        )
+        cache.set(
+            f"job-video-prediction:req:{request_id}:result",
+            {
+                "job_id": self.job.id,
+                "status": "pending",
+            },
+            timeout=3600,
+        )
+
+        with ForceLogin(self.admin, self.client):
+            pending_response = self.client.get(f"/api/jobs/{self.job.id}/video/predictions/{request_id}")
+
+        assert pending_response.status_code == status.HTTP_200_OK
+        assert pending_response.data["state"] == "pending"
+
+        webhook_token = JobViewSet._make_video_prediction_webhook_token(
+            request_id=request_id,
+            job_id=self.job.id,
+        )
+        webhook_payload = {"status": "completed", "result": {"labels": ["car"]}}
+
+        webhook_response = self.client.post(
+            f"/api/jobs/{self.job.id}/video/predictions/webhook/{request_id}",
+            data=webhook_payload,
+            format="json",
+            QUERY_STRING=f"token={webhook_token}",
+        )
+        assert webhook_response.status_code == status.HTTP_202_ACCEPTED
+
+        with ForceLogin(self.admin, self.client):
+            completed_response = self.client.get(
+                f"/api/jobs/{self.job.id}/video/predictions/{request_id}"
+            )
+
+        assert completed_response.status_code == status.HTTP_200_OK
+        assert completed_response.data["state"] == "completed"
+        assert completed_response.data["webhook_payload"] == webhook_payload
+
+    def test_video_prediction_status_rejects_polling_other_job_request(self):
+        request_id = uuid4()
+        cache.set(
+            f"job-video-prediction:req:{request_id}:meta",
+            {
+                "job_id": self.other_job.id,
+                "user_id": self.owner.id,
+                "remote_url": "http://example.com",
+                "created_at": timezone.now().isoformat(),
+            },
+            timeout=3600,
+        )
+        cache.set(
+            f"job-video-prediction:req:{request_id}:result",
+            {
+                "job_id": self.other_job.id,
+                "status": "pending",
+            },
+            timeout=3600,
+        )
+
+        with ForceLogin(self.owner, self.client):
+            response = self.client.get(f"/api/jobs/{self.job.id}/video/predictions/{request_id}")
+
+        assert response.status_code == status.HTTP_403_FORBIDDEN
+
+    def test_video_prediction_status_handles_invalid_request_id(self):
+        with ForceLogin(self.admin, self.client):
+            response = self.client.get(f"/api/jobs/{self.job.id}/video/predictions/not-a-uuid")
+
+        assert response.status_code == status.HTTP_400_BAD_REQUEST
+        assert "valid UUID" in response.data["detail"]
+
+    def test_video_predictions_webhook_handles_invalid_and_expired_request_id(self):
+        invalid_response = self.client.post(
+            f"/api/jobs/{self.job.id}/video/predictions/webhook/not-a-uuid",
+            data={"status": "completed"},
+            format="json",
+        )
+        assert invalid_response.status_code == status.HTTP_400_BAD_REQUEST
+        assert "valid UUID" in invalid_response.data["detail"]
+
+        request_id = uuid4()
+        webhook_token = JobViewSet._make_video_prediction_webhook_token(
+            request_id=request_id,
+            job_id=self.job.id,
+        )
+        expired_response = self.client.post(
+            f"/api/jobs/{self.job.id}/video/predictions/webhook/{request_id}",
+            data={"status": "completed"},
+            format="json",
+            QUERY_STRING=f"token={webhook_token}",
+        )
+        assert expired_response.status_code == status.HTTP_404_NOT_FOUND
+        assert "unknown or expired" in expired_response.data["detail"]
+
+    def test_video_prediction_status_returns_completed_payload(self):
+        request_id = uuid4()
+        cache.set(
+            f"job-video-prediction:req:{request_id}:meta",
+            {
+                "job_id": self.job.id,
+                "user_id": self.admin.id,
+                "remote_url": "http://example.com",
+                "webhook_url": "https://example.com/webhook/completed",
+                "created_at": timezone.now().isoformat(),
+            },
+            timeout=3600,
+        )
+        cache.set(
+            f"job-video-prediction:req:{request_id}:result",
+            {
+                "job_id": self.job.id,
+                "status": "completed",
+                "remote_prediction_id": "remote-123",
+                "webhook_payload": {
+                    "status": "completed",
+                    "output": {
+                        "keyframes": [{"frame": 0, "score": 0.9}],
+                    },
+                },
+            },
+            timeout=3600,
+        )
+
+        with ForceLogin(self.admin, self.client):
+            response = self.client.get(f"/api/jobs/{self.job.id}/video/predictions/{request_id}")
+
+        assert response.status_code == status.HTTP_200_OK
+        assert response.data["state"] == "completed"
+        assert response.data["webhook_url"] == "https://example.com/webhook/completed"
+        assert response.data["remote_prediction_id"] == "remote-123"
+        assert response.data["webhook_payload"]["status"] == "completed"
+
+    def test_video_prediction_status_treats_processing_with_output_as_completed(self):
+        request_id = uuid4()
+        cache.set(
+            f"job-video-prediction:req:{request_id}:meta",
+            {
+                "job_id": self.job.id,
+                "user_id": self.admin.id,
+                "remote_url": "http://example.com",
+                "created_at": timezone.now().isoformat(),
+            },
+            timeout=3600,
+        )
+        cache.set(
+            f"job-video-prediction:req:{request_id}:result",
+            {
+                "job_id": self.job.id,
+                "status": "processing",
+                "webhook_payload": {
+                    "status": "processing",
+                    "output": [{"frame": 0, "score": 0.9}],
+                },
+            },
+            timeout=3600,
+        )
+
+        with ForceLogin(self.admin, self.client):
+            response = self.client.get(f"/api/jobs/{self.job.id}/video/predictions/{request_id}")
+
+        assert response.status_code == status.HTTP_200_OK
+        assert response.data["state"] == "completed"
+
+    def test_video_prediction_status_treats_processing_without_output_as_pending(self):
+        request_id = uuid4()
+        cache.set(
+            f"job-video-prediction:req:{request_id}:meta",
+            {
+                "job_id": self.job.id,
+                "user_id": self.admin.id,
+                "remote_url": "http://example.com",
+                "created_at": timezone.now().isoformat(),
+            },
+            timeout=3600,
+        )
+        cache.set(
+            f"job-video-prediction:req:{request_id}:result",
+            {
+                "job_id": self.job.id,
+                "status": "processing",
+                "webhook_payload": {
+                    "status": "processing",
+                    "output": [],
+                    "selected_indices": [],
+                    "candidate_indices": [],
+                },
+            },
+            timeout=3600,
+        )
+
+        with ForceLogin(self.admin, self.client):
+            response = self.client.get(f"/api/jobs/{self.job.id}/video/predictions/{request_id}")
+
+        assert response.status_code == status.HTTP_200_OK
+        assert response.data["state"] == "pending"
+
+    def test_video_prediction_status_treats_processing_with_selected_indices_as_completed(self):
+        request_id = uuid4()
+        cache.set(
+            f"job-video-prediction:req:{request_id}:meta",
+            {
+                "job_id": self.job.id,
+                "user_id": self.admin.id,
+                "remote_url": "http://example.com",
+                "created_at": timezone.now().isoformat(),
+            },
+            timeout=3600,
+        )
+        cache.set(
+            f"job-video-prediction:req:{request_id}:result",
+            {
+                "job_id": self.job.id,
+                "status": "processing",
+                "webhook_payload": {
+                    "status": "processing",
+                    "selected_indices": [1, 4, 9],
+                },
+            },
+            timeout=3600,
+        )
+
+        with ForceLogin(self.admin, self.client):
+            response = self.client.get(f"/api/jobs/{self.job.id}/video/predictions/{request_id}")
+
+        assert response.status_code == status.HTTP_200_OK
+        assert response.data["state"] == "completed"
+
+    def test_video_prediction_status_treats_processing_with_keyframes_as_completed(self):
+        request_id = uuid4()
+        cache.set(
+            f"job-video-prediction:req:{request_id}:meta",
+            {
+                "job_id": self.job.id,
+                "user_id": self.admin.id,
+                "remote_url": "http://example.com",
+                "created_at": timezone.now().isoformat(),
+            },
+            timeout=3600,
+        )
+        cache.set(
+            f"job-video-prediction:req:{request_id}:result",
+            {
+                "job_id": self.job.id,
+                "status": "processing",
+                "webhook_payload": {
+                    "status": "processing",
+                    "keyframes": [{"frame": 0, "score": 0.9}],
+                },
+            },
+            timeout=3600,
+        )
+
+        with ForceLogin(self.admin, self.client):
+            response = self.client.get(f"/api/jobs/{self.job.id}/video/predictions/{request_id}")
+
+        assert response.status_code == status.HTTP_200_OK
+        assert response.data["state"] == "completed"
+
+    def test_video_prediction_status_returns_selected_indices_payload(self):
+        request_id = uuid4()
+        cache.set(
+            f"job-video-prediction:req:{request_id}:meta",
+            {
+                "job_id": self.job.id,
+                "user_id": self.admin.id,
+                "remote_url": "http://example.com",
+                "created_at": timezone.now().isoformat(),
+            },
+            timeout=3600,
+        )
+        cache.set(
+            f"job-video-prediction:req:{request_id}:result",
+            {
+                "job_id": self.job.id,
+                "status": "completed",
+                "webhook_payload": {
+                    "path": "/tmp/tmpxwir7mxrfile.mp4",
+                    "n_total_frames": 39,
+                    "n_clusters": 20,
+                    "budget": 8,
+                    "selected_indices": [0, 4, 10, 25, 30, 37],
+                    "candidate_indices": [4, 8, 10, 11, 12, 13, 15, 16, 18, 19, 20, 21, 22, 23, 25, 27, 30, 32, 34, 37],
+                },
+            },
+            timeout=3600,
+        )
+
+        with ForceLogin(self.admin, self.client):
+            response = self.client.get(f"/api/jobs/{self.job.id}/video/predictions/{request_id}")
+
+        assert response.status_code == status.HTTP_200_OK
+        assert response.data["state"] == "completed"
+        assert response.data["webhook_payload"]["selected_indices"] == [0, 4, 10, 25, 30, 37]
+
+    def test_video_prediction_status_returns_failed(self):
+        request_id = uuid4()
+        cache.set(
+            f"job-video-prediction:req:{request_id}:meta",
+            {
+                "job_id": self.job.id,
+                "user_id": self.admin.id,
+                "remote_url": "http://example.com",
+                "created_at": timezone.now().isoformat(),
+            },
+            timeout=3600,
+        )
+        cache.set(
+            f"job-video-prediction:req:{request_id}:result",
+            {
+                "job_id": self.job.id,
+                "status": "failed",
+            },
+            timeout=3600,
+        )
+
+        with ForceLogin(self.admin, self.client):
+            response = self.client.get(f"/api/jobs/{self.job.id}/video/predictions/{request_id}")
+
+        assert response.status_code == status.HTTP_200_OK
+        assert response.data["state"] == "failed"
+
+    def test_video_prediction_status_returns_expired_when_request_missing(self):
+        with ForceLogin(self.admin, self.client):
+            response = self.client.get(f"/api/jobs/{self.job.id}/video/predictions/{uuid4()}")
+
+        assert response.status_code == status.HTTP_200_OK
+        assert response.data["state"] == "expired"
+        assert "webhook_url" not in response.data
+
+    def test_video_prediction_status_rejects_request_from_different_job(self):
+        request_id = uuid4()
+        cache.set(
+            f"job-video-prediction:req:{request_id}:meta",
+            {
+                "job_id": self.other_job.id,
+                "user_id": self.admin.id,
+                "remote_url": "http://example.com",
+                "created_at": timezone.now().isoformat(),
+            },
+            timeout=3600,
+        )
+        cache.set(
+            f"job-video-prediction:req:{request_id}:result",
+            {
+                "job_id": self.other_job.id,
+                "status": "pending",
+            },
+            timeout=3600,
+        )
+
+        with ForceLogin(self.admin, self.client):
+            response = self.client.get(f"/api/jobs/{self.job.id}/video/predictions/{request_id}")
+
+        assert response.status_code == status.HTTP_403_FORBIDDEN
+
+    def test_video_prediction_status_requires_job_view_data_permission(self):
+        request_id = uuid4()
+        cache.set(
+            f"job-video-prediction:req:{request_id}:meta",
+            {
+                "job_id": self.job.id,
+                "user_id": self.admin.id,
+                "remote_url": "http://example.com",
+                "created_at": timezone.now().isoformat(),
+            },
+            timeout=3600,
+        )
+        cache.set(
+            f"job-video-prediction:req:{request_id}:result",
+            {
+                "job_id": self.job.id,
+                "status": "pending",
+            },
+            timeout=3600,
+        )
+
+        with ForceLogin(self.somebody, self.client):
+            response = self.client.get(f"/api/jobs/{self.job.id}/video/predictions/{request_id}")
+
+        assert response.status_code == status.HTTP_403_FORBIDDEN
+
+    def test_video_prediction_requests_endpoint_requires_job_view_data_permission(self):
+        with ForceLogin(self.somebody, self.client):
+            response = self.client.get(f"/api/jobs/{self.job.id}/video/predictions/requests")
+
+        assert response.status_code == status.HTTP_403_FORBIDDEN
+
+    def test_video_prediction_requests_reflects_queue_timeout_and_queue_full_as_failed(self):
+        queue_timeout_id = uuid4()
+        queue_full_id = uuid4()
+        created_at = timezone.now()
+        expires_at = created_at + timedelta(hours=1)
+        index_payload = [
+            {
+                "request_id": str(queue_timeout_id),
+                "pathway": "fast",
+                "remote_url": "https://fast.remote.example/predictions",
+                "created_at": created_at.isoformat(),
+                "expires_at": expires_at.isoformat(),
+            },
+            {
+                "request_id": str(queue_full_id),
+                "pathway": "slow",
+                "remote_url": "https://slow.remote.example/predictions",
+                "created_at": created_at.isoformat(),
+                "expires_at": expires_at.isoformat(),
+            },
+        ]
+        cache.set(
+            f"job-video-prediction:job:{self.job.id}:index",
+            index_payload,
+            timeout=3600,
+        )
+        cache.set(
+            f"job-video-prediction:req:{queue_timeout_id}:meta",
+            {
+                "job_id": self.job.id,
+                "user_id": self.admin.id,
+                "pathway": "fast",
+                "remote_url": "https://fast.remote.example/predictions",
+                "created_at": created_at.isoformat(),
+                "expires_at": expires_at.isoformat(),
+            },
+            timeout=3600,
+        )
+        cache.set(
+            f"job-video-prediction:req:{queue_timeout_id}:result",
+            {
+                "job_id": self.job.id,
+                "status": "queue_timeout",
+                "submitted_at": created_at.isoformat(),
+                "expires_at": expires_at.isoformat(),
+                "error": {"type": "queue_timeout", "message": "Queue wait timeout exceeded"},
+            },
+            timeout=3600,
+        )
+        cache.set(
+            f"job-video-prediction:req:{queue_full_id}:meta",
+            {
+                "job_id": self.job.id,
+                "user_id": self.admin.id,
+                "pathway": "slow",
+                "remote_url": "https://slow.remote.example/predictions",
+                "created_at": created_at.isoformat(),
+                "expires_at": expires_at.isoformat(),
+            },
+            timeout=3600,
+        )
+        cache.set(
+            f"job-video-prediction:req:{queue_full_id}:result",
+            {
+                "job_id": self.job.id,
+                "status": "queue_full",
+                "submitted_at": created_at.isoformat(),
+                "expires_at": expires_at.isoformat(),
+                "error": {"type": "queue_full", "message": "Queue is full"},
+            },
+            timeout=3600,
+        )
+
+        with ForceLogin(self.admin, self.client):
+            response = self.client.get(f"/api/jobs/{self.job.id}/video/predictions/requests")
+
+        assert response.status_code == status.HTTP_200_OK
+        assert response.data["count"] == 2
+        items_by_id = {item["request_id"]: item for item in response.data["results"]}
+        assert items_by_id[str(queue_timeout_id)]["status"] == "failed"
+        assert items_by_id[str(queue_timeout_id)]["remote_error"]["type"] == "queue_timeout"
+        assert items_by_id[str(queue_full_id)]["status"] == "failed"
+        assert items_by_id[str(queue_full_id)]["remote_error"]["type"] == "queue_full"
+
+
+class ServerPredictionDispatchAPITestCase(ApiTestBase):
+    @classmethod
+    def setUpTestData(cls):
+        create_db_users(cls)
+
+    def test_prediction_dispatch_status_reports_healthy_redis_with_empty_queues(self):
+        dispatcher = mock.Mock()
+        dispatcher.get_queue_length.side_effect = lambda *, pathway_name: 0
+        dispatcher.get_slot_limit.side_effect = (
+            lambda *, pathway_name: {"fast": 2, "slow": 1, "unknown": 1}[pathway_name]
+        )
+        dispatcher.get_max_queue_length.side_effect = (
+            lambda *, pathway_name: {"fast": 32, "slow": 16, "unknown": 32}[pathway_name]
+        )
+        dispatcher.get_inflight_count.side_effect = lambda *, pathway: 0
+
+        with mock.patch("cvat.apps.engine.views.RedisPredictionDispatch", new=(mock.Mock,)), mock.patch(
+            "cvat.apps.engine.views.get_prediction_dispatcher",
+            return_value=dispatcher,
+        ):
+            with ForceLogin(self.admin, self.client):
+                response = self.client.get("/api/server/predictions/dispatch")
+
+        assert response.status_code == status.HTTP_200_OK
+        assert response.data["redis_ok"] is True
+        assert response.data["redis_error"] is None
+        assert response.data["pathways"]["fast"]["queue_length"] == 0
+        assert response.data["pathways"]["slow"]["queue_length"] == 0
+        assert response.data["pathways"]["unknown"]["queue_length"] == 0
+        assert response.data["pathways"]["fast"]["inflight"] == 0
+        assert response.data["pathways"]["slow"]["inflight"] == 0
+        assert response.data["pathways"]["unknown"]["inflight"] == 0
+        assert response.data["pathways"]["unknown"]["configured"] is False
+
+    def test_prediction_dispatch_status_reports_queue_pressure_and_limits(self):
+        dispatcher = mock.Mock()
+        dispatcher.get_queue_length.side_effect = (
+            lambda *, pathway_name: {"fast": 8, "slow": 5, "unknown": 3}[pathway_name]
+        )
+        dispatcher.get_slot_limit.side_effect = (
+            lambda *, pathway_name: {"fast": 2, "slow": 1, "unknown": 1}[pathway_name]
+        )
+        dispatcher.get_max_queue_length.side_effect = (
+            lambda *, pathway_name: {"fast": 8, "slow": 5, "unknown": 8}[pathway_name]
+        )
+        dispatcher.get_inflight_count.side_effect = lambda *, pathway: 2 if "fast" in pathway else 1
+
+        with mock.patch("cvat.apps.engine.views.RedisPredictionDispatch", new=(mock.Mock,)), mock.patch(
+            "cvat.apps.engine.views.get_prediction_dispatcher",
+            return_value=dispatcher,
+        ):
+            with ForceLogin(self.admin, self.client):
+                response = self.client.get("/api/server/predictions/dispatch")
+
+        assert response.status_code == status.HTTP_200_OK
+        assert response.data["redis_ok"] is True
+        assert response.data["redis_error"] is None
+        assert response.data["pathways"]["fast"]["queue_length"] == 8
+        assert response.data["pathways"]["fast"]["inflight"] == 2
+        assert response.data["pathways"]["fast"]["max_queue_length"] == 8
+        assert response.data["pathways"]["slow"]["queue_length"] == 5
+        assert response.data["pathways"]["slow"]["inflight"] == 1
+        assert response.data["pathways"]["slow"]["max_queue_length"] == 5
+        assert response.data["pathways"]["unknown"]["queue_length"] == 3
+        assert response.data["pathways"]["unknown"]["inflight"] == 0
+        assert response.data["pathways"]["unknown"]["slot_limit"] == 1
+        assert response.data["pathways"]["unknown"]["max_queue_length"] == 8
+
+    def test_prediction_dispatch_status_reports_redis_error_on_access_failure(self):
+        dispatcher = mock.Mock()
+        dispatcher.get_queue_length.side_effect = RuntimeError("Redis unavailable")
+
+        with mock.patch("cvat.apps.engine.views.RedisPredictionDispatch", new=(mock.Mock,)), mock.patch(
+            "cvat.apps.engine.views.get_prediction_dispatcher",
+            return_value=dispatcher,
+        ):
+            with ForceLogin(self.admin, self.client):
+                response = self.client.get("/api/server/predictions/dispatch")
+
+        assert response.status_code == status.HTTP_200_OK
+        assert response.data["redis_ok"] is False
+        assert isinstance(response.data["redis_error"], str)
+        assert response.data["redis_error"]
+
+    def test_prediction_dispatch_health_reports_success_and_failure_states(self):
+        healthy_dispatcher = mock.Mock()
+        healthy_dispatcher.health.return_value = {
+            "redis_ok": True,
+            "acquire_ok": True,
+            "latency_ms": 1.25,
+            "details": {"mode": "queued"},
+        }
+        unhealthy_dispatcher = mock.Mock()
+        unhealthy_dispatcher.health.return_value = {
+            "redis_ok": True,
+            "acquire_ok": False,
+            "latency_ms": 20.5,
+            "details": {"acquire_error": "Queue wait timeout exceeded"},
+        }
+
+        with mock.patch("cvat.apps.engine.views.RedisPredictionDispatch", new=(mock.Mock,)), mock.patch(
+            "cvat.apps.engine.views.get_prediction_dispatcher",
+            return_value=healthy_dispatcher,
+        ):
+            with ForceLogin(self.admin, self.client):
+                healthy_response = self.client.get("/api/server/predictions/dispatch/health")
+
+        assert healthy_response.status_code == status.HTTP_200_OK
+        assert healthy_response.data["redis_ok"] is True
+        assert healthy_response.data["acquire_ok"] is True
+
+        with mock.patch("cvat.apps.engine.views.RedisPredictionDispatch", new=(mock.Mock,)), mock.patch(
+            "cvat.apps.engine.views.get_prediction_dispatcher",
+            return_value=unhealthy_dispatcher,
+        ):
+            with ForceLogin(self.admin, self.client):
+                unhealthy_response = self.client.get("/api/server/predictions/dispatch/health")
+
+        assert unhealthy_response.status_code == status.HTTP_503_SERVICE_UNAVAILABLE
+        assert unhealthy_response.data["redis_ok"] is True
+        assert unhealthy_response.data["acquire_ok"] is False
+
+    def test_prediction_dispatch_server_endpoints_require_authentication(self):
+        dispatch_status_response = self.client.get("/api/server/predictions/dispatch")
+        dispatch_health_response = self.client.get("/api/server/predictions/dispatch/health")
+
+        assert dispatch_status_response.status_code == status.HTTP_401_UNAUTHORIZED
+        assert dispatch_health_response.status_code == status.HTTP_401_UNAUTHORIZED
+
+        dispatcher = mock.Mock()
+        dispatcher.get_queue_length.side_effect = lambda *, pathway_name: 0
+        dispatcher.get_slot_limit.side_effect = (
+            lambda *, pathway_name: {"fast": 2, "slow": 1, "unknown": 1}[pathway_name]
+        )
+        dispatcher.get_max_queue_length.side_effect = (
+            lambda *, pathway_name: {"fast": 32, "slow": 16, "unknown": 32}[pathway_name]
+        )
+        dispatcher.get_inflight_count.side_effect = lambda *, pathway: 0
+
+        with mock.patch("cvat.apps.engine.views.RedisPredictionDispatch", new=(mock.Mock,)), mock.patch(
+            "cvat.apps.engine.views.get_prediction_dispatcher",
+            return_value=dispatcher,
+        ):
+            with ForceLogin(self.admin, self.client):
+                authenticated_dispatch_status_response = self.client.get(
+                    "/api/server/predictions/dispatch"
+                )
+
+        assert authenticated_dispatch_status_response.status_code != status.HTTP_500_INTERNAL_SERVER_ERROR
+        assert authenticated_dispatch_status_response.status_code == status.HTTP_200_OK
+
+        healthy_dispatcher = mock.Mock()
+        healthy_dispatcher.health.return_value = {
+            "redis_ok": True,
+            "acquire_ok": True,
+            "latency_ms": 1.5,
+            "details": {"mode": "queued"},
+        }
+        unhealthy_dispatcher = mock.Mock()
+        unhealthy_dispatcher.health.return_value = {
+            "redis_ok": True,
+            "acquire_ok": False,
+            "latency_ms": 18.0,
+            "details": {"acquire_error": "Queue wait timeout exceeded"},
+        }
+
+        with mock.patch("cvat.apps.engine.views.RedisPredictionDispatch", new=(mock.Mock,)), mock.patch(
+            "cvat.apps.engine.views.get_prediction_dispatcher",
+            return_value=healthy_dispatcher,
+        ):
+            with ForceLogin(self.admin, self.client):
+                authenticated_healthy_dispatch_health_response = self.client.get(
+                    "/api/server/predictions/dispatch/health"
+                )
+
+        assert (
+            authenticated_healthy_dispatch_health_response.status_code
+            != status.HTTP_500_INTERNAL_SERVER_ERROR
+        )
+        assert authenticated_healthy_dispatch_health_response.status_code == status.HTTP_200_OK
+
+        with mock.patch("cvat.apps.engine.views.RedisPredictionDispatch", new=(mock.Mock,)), mock.patch(
+            "cvat.apps.engine.views.get_prediction_dispatcher",
+            return_value=unhealthy_dispatcher,
+        ):
+            with ForceLogin(self.admin, self.client):
+                authenticated_unhealthy_dispatch_health_response = self.client.get(
+                    "/api/server/predictions/dispatch/health"
+                )
+
+        assert (
+            authenticated_unhealthy_dispatch_health_response.status_code
+            != status.HTTP_500_INTERNAL_SERVER_ERROR
+        )
+        assert (
+            authenticated_unhealthy_dispatch_health_response.status_code
+            == status.HTTP_503_SERVICE_UNAVAILABLE
+        )
 
 
 class ServerAboutAPITestCase(ApiTestBase):
@@ -5216,6 +6933,7 @@ class TaskDataAPITestCase(ApiTestBase):
         def _send_data_and_fail(*args, **kwargs):
             response = _send_data(*args, **kwargs)
             self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
             raise Exception(response.data)
 
         filenames = [

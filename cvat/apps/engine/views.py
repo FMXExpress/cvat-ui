@@ -4,9 +4,11 @@
 # SPDX-License-Identifier: MIT
 
 import itertools
+import json
 import os
 import os.path as osp
 import re
+import secrets
 import shutil
 import textwrap
 import traceback
@@ -14,18 +16,25 @@ import zlib
 from abc import ABCMeta, abstractmethod
 from contextlib import suppress
 from copy import copy
-from datetime import datetime
+from datetime import datetime, timedelta
+from hashlib import sha256
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
+from uuid import UUID, uuid4
 
 import django_rq
+import requests
 from attr.converters import to_bool
 from django.conf import settings
 from django.contrib.auth.models import User
+from django.core.cache import cache
+from django.core import signing
 from django.core.files.storage import storages
 from django.db import IntegrityError, transaction
 from django.db.models.query import Prefetch
-from django.http import HttpResponse, HttpResponseBadRequest, HttpResponseNotFound
+from django.http import FileResponse, HttpResponse, HttpResponseBadRequest, HttpResponseNotFound
+from django.utils.dateparse import parse_datetime
 from django.utils import timezone
 from drf_spectacular.types import OpenApiTypes
 from drf_spectacular.utils import (
@@ -103,6 +112,13 @@ from cvat.apps.engine.permissions import (
     UserPermission,
     get_iam_context,
 )
+from cvat.apps.engine.prediction_dispatch import (
+    PredictionDispatchLogContext,
+    PredictionDispatchQueueFullError,
+    PredictionDispatchTimeoutError,
+    RedisPredictionDispatch,
+    get_prediction_dispatcher,
+)
 from cvat.apps.engine.rq import ImportRequestId, ImportRQMeta, RQMetaWithFailureInfo
 from cvat.apps.engine.serializers import (
     AboutSerializer,
@@ -126,12 +142,21 @@ from cvat.apps.engine.serializers import (
     IssueWriteSerializer,
     JobDataMetaWriteSerializer,
     JobReadSerializer,
+    JobVideoAccessSerializer,
+    JobVideoPredictionStatusSerializer,
+    JobVideoPredictionRequestListItemSerializer,
+    JobVideoPredictionRequestListSerializer,
+    JobVideoPredictionSubmitResponseSerializer,
+    JobVideoPredictionSubmitSerializer,
+    JobVideoPredictionWebhookRequestSerializer,
     JobValidationLayoutReadSerializer,
     JobValidationLayoutWriteSerializer,
     JobWriteSerializer,
     LabeledDataSerializer,
     LabelSerializer,
     PluginsSerializer,
+    PredictionDispatchStatusSerializer,
+    PredictionDispatchHealthSerializer,
     ProjectFileSerializer,
     ProjectReadSerializer,
     ProjectWriteSerializer,
@@ -142,10 +167,11 @@ from cvat.apps.engine.serializers import (
     TaskValidationLayoutWriteSerializer,
     TaskWriteSerializer,
     UserSerializer,
+    DetailMessageSerializer,
 )
 from cvat.apps.engine.tus import TusFile
 from cvat.apps.engine.types import ExtendedRequest
-from cvat.apps.engine.utils import parse_exception_message, sendfile
+from cvat.apps.engine.utils import parse_exception_message, reverse, sendfile
 from cvat.apps.engine.view_utils import (
     get_410_response_for_export_api,
     get_410_response_when_checking_process_status,
@@ -154,6 +180,7 @@ from cvat.apps.engine.view_utils import (
 from cvat.apps.iam.filters import ORGANIZATION_OPEN_API_PARAMETERS
 from cvat.apps.iam.permissions import IsAuthenticatedOrReadPublicResource
 from cvat.apps.redis_handler.serializers import RqIdSerializer
+from cvat.utils.http import PROXIES_FOR_UNTRUSTED_URLS, make_requests_session
 from utils.dataset_manifest import ImageManifestManager
 
 from . import models
@@ -283,6 +310,128 @@ class ServerViewSet(viewsets.ViewSet):
             'PREDICT': False, # FIXME: it is unused anymore (for UI only)
         }
         return Response(PluginsSerializer(data).data)
+
+    @staticmethod
+    @extend_schema(
+        summary='Get prediction dispatch status',
+        responses={
+            '200': PredictionDispatchStatusSerializer,
+        },
+    )
+    @action(
+        detail=False,
+        methods=['GET'],
+        url_path='predictions/dispatch',
+        serializer_class=PredictionDispatchStatusSerializer,
+    )
+    def prediction_dispatch_status(request: ExtendedRequest):
+        dispatcher = get_prediction_dispatcher()
+        fast_url = settings.JOB_VIDEO_PREDICTION_FAST_URL
+        slow_url = settings.JOB_VIDEO_PREDICTION_SLOW_URL
+
+        pathways = {
+            'fast': {
+                'queue_length': 0,
+                'inflight': 0,
+                'slot_limit': settings.JOB_VIDEO_PREDICTION_MAX_CONCURRENCY_FAST,
+                'max_queue_length': settings.JOB_VIDEO_PREDICTION_DISPATCH_MAX_QUEUE_LENGTH_FAST,
+                'configured': bool(fast_url),
+            },
+            'slow': {
+                'queue_length': 0,
+                'inflight': 0,
+                'slot_limit': settings.JOB_VIDEO_PREDICTION_MAX_CONCURRENCY_SLOW,
+                'max_queue_length': settings.JOB_VIDEO_PREDICTION_DISPATCH_MAX_QUEUE_LENGTH_SLOW,
+                'configured': bool(slow_url),
+            },
+            'unknown': {
+                'queue_length': 0,
+                'inflight': 0,
+                'slot_limit': min(
+                    settings.JOB_VIDEO_PREDICTION_MAX_CONCURRENCY_FAST,
+                    settings.JOB_VIDEO_PREDICTION_MAX_CONCURRENCY_SLOW,
+                ),
+                'max_queue_length': max(
+                    settings.JOB_VIDEO_PREDICTION_DISPATCH_MAX_QUEUE_LENGTH_FAST,
+                    settings.JOB_VIDEO_PREDICTION_DISPATCH_MAX_QUEUE_LENGTH_SLOW,
+                ),
+                'configured': False,
+            },
+        }
+
+        redis_ok = False
+        redis_error = None
+        try:
+            if isinstance(dispatcher, RedisPredictionDispatch):
+                pathways['fast']['queue_length'] = dispatcher.get_queue_length(pathway_name='fast')
+                pathways['slow']['queue_length'] = dispatcher.get_queue_length(pathway_name='slow')
+                pathways['fast']['slot_limit'] = dispatcher.get_slot_limit(pathway_name='fast')
+                pathways['slow']['slot_limit'] = dispatcher.get_slot_limit(pathway_name='slow')
+                pathways['unknown']['slot_limit'] = dispatcher.get_slot_limit(pathway_name='unknown')
+                pathways['fast']['max_queue_length'] = dispatcher.get_max_queue_length(pathway_name='fast')
+                pathways['slow']['max_queue_length'] = dispatcher.get_max_queue_length(pathway_name='slow')
+                pathways['unknown']['max_queue_length'] = dispatcher.get_max_queue_length(pathway_name='unknown')
+                pathways['unknown']['queue_length'] = dispatcher.get_queue_length(pathway_name='unknown')
+                if fast_url:
+                    pathways['fast']['inflight'] = dispatcher.get_inflight_count(pathway=fast_url)
+                if slow_url:
+                    pathways['slow']['inflight'] = dispatcher.get_inflight_count(pathway=slow_url)
+                redis_ok = True
+            else:
+                redis_error = f'Unsupported dispatcher backend: {type(dispatcher).__name__}'
+        except Exception as exc: # nosec B110
+            redis_error = parse_exception_message(exc)
+
+        response_data = {
+            'mode': settings.JOB_VIDEO_PREDICTION_DISPATCH_MODE,
+            'queue_timeout_seconds': settings.JOB_VIDEO_PREDICTION_DISPATCH_QUEUE_TIMEOUT_SECONDS,
+            'poll_interval_seconds': settings.JOB_VIDEO_PREDICTION_DISPATCH_POLL_INTERVAL_SECONDS,
+            'lease_ttl_seconds': settings.JOB_VIDEO_PREDICTION_DISPATCH_LEASE_TTL_SECONDS,
+            'pathways': pathways,
+            'redis_ok': redis_ok,
+            'redis_error': redis_error,
+        }
+        serializer = PredictionDispatchStatusSerializer(data=response_data)
+        serializer.is_valid(raise_exception=True)
+        return Response(serializer.data)
+
+    @staticmethod
+    @extend_schema(
+        summary='Get prediction dispatch health',
+        responses={
+            '200': PredictionDispatchHealthSerializer,
+            '503': PredictionDispatchHealthSerializer,
+        },
+    )
+    @action(
+        detail=False,
+        methods=['GET'],
+        url_path='predictions/dispatch/health',
+        serializer_class=PredictionDispatchHealthSerializer,
+    )
+    def prediction_dispatch_health(request: ExtendedRequest):
+        dispatcher = get_prediction_dispatcher()
+
+        if not isinstance(dispatcher, RedisPredictionDispatch):
+            response_data = {
+                'redis_ok': False,
+                'acquire_ok': False,
+                'latency_ms': 0.0,
+                'details': {
+                    'error': f'Unsupported dispatcher backend: {type(dispatcher).__name__}',
+                },
+            }
+            serializer = PredictionDispatchHealthSerializer(data=response_data)
+            serializer.is_valid(raise_exception=True)
+            return Response(serializer.data, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+
+        health_data = dispatcher.health()
+        serializer = PredictionDispatchHealthSerializer(data=health_data)
+        serializer.is_valid(raise_exception=True)
+
+        is_healthy = bool(serializer.validated_data['redis_ok'] and serializer.validated_data['acquire_ok'])
+        response_status = status.HTTP_200_OK if is_healthy else status.HTTP_503_SERVICE_UNAVAILABLE
+        return Response(serializer.data, status=response_status)
 
 @extend_schema(tags=['projects'])
 @extend_schema_view(
@@ -1657,6 +1806,35 @@ class JobViewSet(viewsets.GenericViewSet, mixins.ListModelMixin, mixins.CreateMo
     mixins.RetrieveModelMixin, PartialUpdateModelMixin, mixins.DestroyModelMixin,
     UploadMixin, DatasetMixin
 ):
+    VIDEO_DOWNLOAD_TOKEN_SALT = 'job-video-download'
+    VIDEO_DOWNLOAD_TOKEN_ACTION = 'download_video'
+    VIDEO_DOWNLOAD_TOKEN_TTL_SECONDS = settings.JOB_VIDEO_DOWNLOAD_TOKEN_TTL_SECONDS
+    VIDEO_PREDICTION_REQUEST_TTL_SECONDS = getattr(
+        settings,
+        'JOB_VIDEO_PREDICTION_REQUEST_TTL_SECONDS',
+        24 * 60 * 60,
+    )
+    VIDEO_PREDICTION_ASYNC_SUBMIT_ACCEPTED_STATUS_CODES = frozenset(
+        {
+            status.HTTP_200_OK,
+            status.HTTP_201_CREATED,
+            status.HTTP_202_ACCEPTED,
+            status.HTTP_204_NO_CONTENT,
+        }
+    )
+    VIDEO_PREDICTION_WEBHOOK_TOKEN_SALT = 'job-video-predictions-webhook'
+    VIDEO_PREDICTION_REQUEST_LIST_LIMIT = 100
+    VIDEO_PREDICTION_WEBHOOK_GRACE_TIMEOUT_SECONDS = getattr(
+        settings,
+        "JOB_VIDEO_PREDICTION_WEBHOOK_GRACE_TIMEOUT_SECONDS",
+        15 * 60,
+    )
+    VIDEO_PREDICTION_RECONCILIATION_MAX_SCAN = getattr(
+        settings,
+        "JOB_VIDEO_PREDICTION_RECONCILIATION_MAX_SCAN",
+        1000,
+    )
+
     queryset = Job.objects.select_related(
         'assignee',
         'segment__task__data',
@@ -1703,6 +1881,35 @@ class JobViewSet(viewsets.GenericViewSet, mixins.ListModelMixin, mixins.CreateMo
             return JobReadSerializer
         else:
             return JobWriteSerializer
+
+    @staticmethod
+    def _resolve_video_source_storage(db_data: Data) -> dict[str, Any]:
+        storage = StorageChoice(db_data.storage)
+        storage_method = StorageMethodChoice(db_data.storage_method)
+        cloud_storage_id = db_data.cloud_storage_id
+
+        if storage == StorageChoice.CLOUD_STORAGE or cloud_storage_id:
+            source_kind = StorageChoice.CLOUD_STORAGE
+        elif storage == StorageChoice.SHARE:
+            source_kind = StorageChoice.SHARE
+        else:
+            source_kind = StorageChoice.LOCAL
+
+        return {
+            'storage': source_kind,
+            'storage_method': storage_method,
+            'cloud_storage_id': cloud_storage_id,
+        }
+
+    @staticmethod
+    def _resolve_video_absolute_path(db_data: Data) -> Path:
+        video_rel = Path(db_data.video.path)
+        allowed_root = db_data.get_raw_data_dirname().resolve()
+        video_abs = (allowed_root / video_rel).resolve()
+        if not video_abs.is_relative_to(allowed_root):
+            raise ValidationError('Video source is outside of allowed storage roots')
+
+        return video_abs
 
     @transaction.atomic
     def perform_create(self, serializer):
@@ -2047,6 +2254,1666 @@ class JobViewSet(viewsets.GenericViewSet, mixins.ListModelMixin, mixins.CreateMo
             data_quality='compressed',
         )
         return data_getter()
+
+    @extend_schema(
+        summary='Request a signed download link for a job video',
+        description=textwrap.dedent("""\
+            The endpoint detects the source storage from `job.segment.task.data`
+            (`storage`, `storage_method`, `cloud_storage`, and `video.path`).
+
+            Local and share-mounted videos return a short-lived CVAT-hosted signed URL.
+            Cloud-backed videos are currently unsupported.
+
+            Expected frontend sequence:
+            1. Request `/api/jobs/{id}/video/access` from CVAT and read `download_url`, `expires_at`,
+               `job_id`, `task_id`, and `frame_hints`.
+            2. Call the SAM2 fast/slow endpoint from the UI with that signed URL and UI-selected settings.
+            3. Receive keyframe JSON and apply selections locally in the UI.
+            """),
+        responses={
+            '200': JobVideoAccessSerializer,
+            '400': OpenApiResponse(description='The job is not associated with a video'),
+            '422': OpenApiResponse(description='Video access for cloud-backed media is not supported yet'),
+        },
+    )
+    @action(detail=True, methods=['POST'], url_path='video/access')
+    def video_access(self, request: ExtendedRequest, pk: int):
+        db_job = self.get_object()
+        db_data = db_job.segment.task.data
+        if not hasattr(db_data, 'video'):
+            return Response(
+                data='This job is not associated with a video',
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        source_storage = self._resolve_video_source_storage(db_data)
+        if source_storage['storage'] == StorageChoice.CLOUD_STORAGE:
+            return Response(
+                data='Video access for cloud-backed media is not supported yet',
+                status=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            )
+
+        signer = signing.TimestampSigner(salt=self.VIDEO_DOWNLOAD_TOKEN_SALT)
+        token_payload = json.dumps(
+            {
+                'job_id': db_job.id,
+                'action': self.VIDEO_DOWNLOAD_TOKEN_ACTION,
+                'nonce': secrets.token_urlsafe(12),
+            },
+            separators=(',', ':'),
+        )
+        token = signer.sign(token_payload)
+        expires_at = timezone.now() + timedelta(seconds=self.VIDEO_DOWNLOAD_TOKEN_TTL_SECONDS)
+        self._store_video_download_token_nonce(token=token, payload=token_payload)
+        download_url = request.build_absolute_uri(
+            reverse(
+                'job-video-download',
+                kwargs={'pk': db_job.pk},
+                query_params={'token': token},
+            )
+        )
+        task_frame_provider = TaskFrameProvider(db_job.segment.task)
+        included_frames = None
+        if raw_segment_frames := (getattr(db_job.segment, 'frames', None) or None):
+            included_frames = sorted(
+                map(task_frame_provider.get_rel_frame_number, raw_segment_frames)
+            ) or None
+
+        serializer = JobVideoAccessSerializer(data={
+            'job_id': db_job.id,
+            'task_id': db_job.segment.task_id,
+            'token': token,
+            'download_url': download_url,
+            'expires_at': expires_at,
+            'source_storage': source_storage,
+            'media': {
+                'path': db_data.video.path,
+                'width': db_data.video.width,
+                'height': db_data.video.height,
+            },
+            'frame_hints': {
+                'start_frame': db_data.start_frame,
+                'stop_frame': db_data.stop_frame,
+                'frame_step': db_data.get_frame_step(),
+                'included_frames': included_frames,
+                'frame_width': db_data.video.width,
+                'frame_height': db_data.video.height,
+            },
+        })
+        serializer.is_valid(raise_exception=True)
+        slogger.job[db_job.id].info(
+            "Issued signed video download token",
+            extra={
+                "log_fields": {
+                    "event": "video_download_token_issued",
+                    "user_id": request.user.id,
+                    "job_id": db_job.id,
+                    "token_expiry": expires_at.isoformat(),
+                    "one_time": settings.JOB_VIDEO_DOWNLOAD_TOKEN_ONE_TIME_USE,
+                }
+            },
+        )
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+    @extend_schema(
+        summary='Submit a video prediction request to a remote service',
+        request=JobVideoPredictionSubmitSerializer,
+        description=(
+            'Submits a remote prediction request and returns a signed callback URL in the '
+            'format `/api/jobs/{job_id}/video/predictions/webhook/{request_id}?token=...`.'
+        ),
+        responses={
+            '202': JobVideoPredictionSubmitResponseSerializer,
+            '400': OpenApiResponse(
+                response=DetailMessageSerializer,
+                description='The request payload is invalid',
+            ),
+            '502': OpenApiResponse(
+                response=DetailMessageSerializer,
+                description='Failed to reach the remote prediction service',
+            ),
+        },
+        examples=[
+            OpenApiExample(
+                'Video prediction submit request (pathway)',
+                value={
+                    'pathway': 'fast',
+                    'input': {'job_id': 7},
+                },
+                request_only=True,
+            ),
+            OpenApiExample(
+                'Video prediction submit request (deprecated remote_url)',
+                value={
+                    'remote_url': 'https://predictor.example/predictions',
+                    'input': {'job_id': 7},
+                },
+                request_only=True,
+            ),
+            OpenApiExample(
+                'Video prediction submit response',
+                value={
+                    'request_id': '6d6c6b70-5e8f-4fd3-b638-2d9739d27f4f',
+                    'webhook_url': (
+                        'https://cvat.example/api/jobs/7/video/predictions/webhook/'
+                        '6d6c6b70-5e8f-4fd3-b638-2d9739d27f4f?token=...'
+                    ),
+                    'remote_url': 'https://predictor.example/predictions',
+                    'remote_status_code': 202,
+                    'remote_headers': {
+                        'location': 'https://predictor.example/predictions/123',
+                    },
+                },
+                response_only=True,
+                status_codes=['202'],
+            ),
+        ],
+    )
+    @action(detail=True, methods=['POST'], url_path='video/predictions')
+    def video_predictions(self, request: ExtendedRequest, pk: int):
+        db_job = self.get_object()
+        serializer = JobVideoPredictionSubmitSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        validated_data = serializer.validated_data
+
+        pathway = validated_data.get('pathway')
+        if pathway:
+            remote_url = self._resolve_video_prediction_remote_url(pathway=pathway)
+        else:
+            remote_url = validated_data['remote_url']
+
+        remote_url = remote_url.rstrip('/')
+        if not remote_url.endswith('/predictions'):
+            remote_url = f'{remote_url}/predictions'
+
+        request_id = uuid4()
+        created_at = timezone.now()
+        expires_at = created_at + timedelta(seconds=self.VIDEO_PREDICTION_REQUEST_TTL_SECONDS)
+        webhook_token = self._make_video_prediction_webhook_token(
+            request_id=request_id,
+            job_id=db_job.id,
+        )
+        webhook_url = request.build_absolute_uri(
+            reverse(
+                'job-video-predictions-webhook-by-id',
+                kwargs={'pk': db_job.pk, 'request_id': str(request_id)},
+                query_params={
+                    'token': webhook_token,
+                },
+            )
+        )
+
+        outbound_payload = {
+            'input': validated_data['input'],
+            'webhook': webhook_url,
+        }
+        outbound_headers = {
+            'Prefer': 'respond-async',
+            'Content-Type': 'application/json',
+        }
+
+        dispatcher = get_prediction_dispatcher()
+        dispatch_log_context = PredictionDispatchLogContext(
+            request_id=str(request_id),
+            job_id=db_job.id,
+            pathway=pathway or 'custom',
+            remote_url=remote_url,
+        )
+
+        try:
+            with dispatcher.acquire(pathway=remote_url, log_context=dispatch_log_context) as dispatch_lease:
+                with make_requests_session() as session:
+                    remote_response = session.post(
+                        remote_url,
+                        headers=outbound_headers,
+                        json=outbound_payload,
+                        timeout=30,
+                        proxies=PROXIES_FOR_UNTRUSTED_URLS or {},
+                    )
+        except requests.RequestException as exc:
+            slogger.job[db_job.id].warning(
+                "Video prediction remote submit failed",
+                extra={
+                    "log_fields": {
+                        "event": "remote_submit_failure",
+                        "request_id": str(request_id),
+                        "job_id": db_job.id,
+                        "pathway": pathway or 'custom',
+                        "queue_wait_ms": dispatch_lease.queue_wait_ms if 'dispatch_lease' in locals() else 0,
+                        "inflight_count": dispatch_lease.inflight_count if 'dispatch_lease' in locals() else 0,
+                        "dispatch_mode": dispatch_lease.mode if 'dispatch_lease' in locals() else dispatcher.mode,
+                        "remote_url": remote_url,
+                        "error_class": exc.__class__.__name__,
+                        "error_detail": parse_exception_message(exc),
+                    }
+                },
+            )
+            return Response(
+                data={
+                    'detail': (
+                        f'Failed to submit predictions request: {parse_exception_message(exc)}'
+                    )
+                },
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
+        except PredictionDispatchTimeoutError as exc:
+            return Response(
+                data={'detail': str(exc)},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+        except PredictionDispatchQueueFullError as exc:
+            return Response(
+                data={'detail': str(exc)},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+
+        slogger.job[db_job.id].info(
+            "Video prediction remote submit succeeded",
+            extra={
+                "log_fields": {
+                    "event": "remote_submit_success",
+                    "request_id": str(request_id),
+                    "job_id": db_job.id,
+                    "pathway": pathway or 'custom',
+                    "queue_wait_ms": dispatch_lease.queue_wait_ms,
+                    "inflight_count": dispatch_lease.inflight_count,
+                    "dispatch_mode": dispatch_lease.mode,
+                    "remote_url": remote_url,
+                }
+            },
+        )
+
+        remote_headers = {
+            key: value
+            for key, value in remote_response.headers.items()
+            if key.lower() in {'location', 'retry-after', 'x-request-id', 'content-type'}
+        }
+
+        if remote_response.content:
+            try:
+                remote_body = remote_response.json()
+                remote_text = None
+            except ValueError:
+                remote_body = None
+                remote_text = remote_response.text
+        else:
+            remote_body = None
+            remote_text = None
+
+        self._store_video_prediction_request_metadata(
+            request_id=request_id,
+            metadata={
+                'job_id': db_job.id,
+                'user_id': request.user.id,
+                'remote_url': remote_url,
+                'pathway': pathway or 'custom',
+                'attempts': 1,
+                'created_at': created_at.isoformat(),
+                'expires_at': expires_at.isoformat(),
+                'webhook_url': webhook_url,
+                'input': validated_data['input'],
+                'submit_response': {
+                    'status_code': remote_response.status_code,
+                    'headers': remote_headers,
+                },
+            },
+        )
+        self._append_video_prediction_request_index(
+            job_id=db_job.id,
+            request_info={
+                'request_id': str(request_id),
+                'created_at': created_at.isoformat(),
+                'pathway': pathway or 'custom',
+                'remote_url': remote_url,
+                'expires_at': expires_at.isoformat(),
+            },
+        )
+
+        if remote_response.status_code not in self.VIDEO_PREDICTION_ASYNC_SUBMIT_ACCEPTED_STATUS_CODES:
+            error_detail = (
+                f"Remote prediction service responded with status {remote_response.status_code}"
+            )
+            remote_error = self._build_remote_prediction_error_payload(
+                remote_body=remote_body,
+                remote_text=remote_text,
+            )
+            slogger.job[db_job.id].warning(
+                "Video prediction remote submit failed",
+                extra={
+                    "log_fields": {
+                        "event": "remote_submit_failure",
+                        "request_id": str(request_id),
+                        "job_id": db_job.id,
+                        "pathway": pathway or 'custom',
+                        "queue_wait_ms": dispatch_lease.queue_wait_ms,
+                        "inflight_count": dispatch_lease.inflight_count,
+                        "dispatch_mode": dispatch_lease.mode,
+                        "remote_url": remote_url,
+                        "remote_status_code": remote_response.status_code,
+                        "error_class": "RemoteSubmitUnexpectedStatusError",
+                        "error_detail": error_detail,
+                    }
+                },
+            )
+            failed_result: dict[str, Any] = {
+                'job_id': db_job.id,
+                'status': 'failed',
+                'pathway': pathway or 'custom',
+                'attempts': 1,
+                'submitted_at': created_at.isoformat(),
+                'expires_at': expires_at.isoformat(),
+                'error': error_detail,
+                'remote_submit': {
+                    'status_code': remote_response.status_code,
+                    'headers': remote_headers,
+                },
+            }
+            if remote_body is not None:
+                failed_result['remote_submit']['body'] = remote_body
+            if remote_text is not None:
+                failed_result['remote_submit']['text'] = remote_text
+            self._store_video_prediction_request_result(
+                request_id=request_id,
+                result=failed_result,
+            )
+            return Response(
+                data={
+                    'detail': error_detail,
+                    'request_id': str(request_id),
+                    'remote_status_code': remote_response.status_code,
+                    **({'remote_error': remote_error} if remote_error is not None else {}),
+                },
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
+
+        self._store_video_prediction_request_result(
+            request_id=request_id,
+            result={
+                'job_id': db_job.id,
+                'status': 'pending',
+                'pathway': pathway or 'custom',
+                'attempts': 1,
+                'submitted_at': created_at.isoformat(),
+                'expires_at': expires_at.isoformat(),
+            },
+        )
+        response_data: dict[str, Any] = {
+            'request_id': request_id,
+            'webhook_url': webhook_url,
+            'remote_url': remote_url,
+            'remote_status_code': remote_response.status_code,
+            'remote_headers': remote_headers,
+        }
+
+        if remote_response.content:
+            if remote_body is not None:
+                response_data['remote_body'] = remote_body
+            elif remote_text is not None:
+                response_data['remote_text'] = remote_text
+
+        remote_prediction_id = self._extract_remote_prediction_id(
+            remote_body=remote_body,
+            remote_headers=remote_headers,
+        )
+        if remote_prediction_id is not None:
+            response_data['remote_prediction_id'] = remote_prediction_id
+
+        response_serializer = JobVideoPredictionSubmitResponseSerializer(data=response_data)
+        response_serializer.is_valid(raise_exception=True)
+
+        if remote_prediction_id is not None:
+            prediction_request_result_data = self._get_video_prediction_request_result(request_id=request_id)
+            if prediction_request_result_data:
+                prediction_request_result_data['remote_prediction_id'] = remote_prediction_id
+                self._store_video_prediction_request_result(
+                    request_id=request_id,
+                    result=prediction_request_result_data,
+                )
+
+        slogger.job[db_job.id].info(
+            "Submitted video predictions request",
+            extra={
+                "log_fields": {
+                    "event": "video_predictions_submitted",
+                    "user_id": request.user.id,
+                    "job_id": db_job.id,
+                    "request_id": str(request_id),
+                    "remote_url": remote_url,
+                    "remote_status_code": remote_response.status_code,
+                    "dispatch_mode": dispatch_lease.mode,
+                    "pathway": pathway or 'custom',
+                    "queue_wait_ms": dispatch_lease.queue_wait_ms,
+                    "inflight_count": dispatch_lease.inflight_count,
+                }
+            },
+        )
+
+        return Response(response_serializer.data, status=status.HTTP_202_ACCEPTED)
+
+    @staticmethod
+    def _resolve_video_prediction_remote_url(*, pathway: str) -> str:
+        configured_pathways = {
+            'fast': getattr(settings, 'JOB_VIDEO_PREDICTION_FAST_URL', ''),
+            'slow': getattr(settings, 'JOB_VIDEO_PREDICTION_SLOW_URL', ''),
+        }
+        remote_url = configured_pathways.get(pathway, '')
+        if not remote_url:
+            raise serializers.ValidationError(
+                {
+                    'pathway': (
+                        f"No remote URL is configured for pathway '{pathway}'. "
+                        "Set JOB_VIDEO_PREDICTION_FAST_URL / JOB_VIDEO_PREDICTION_SLOW_URL."
+                    )
+                }
+            )
+        return remote_url
+
+    @extend_schema(
+        summary='Get video prediction request state',
+        responses={
+            '200': JobVideoPredictionStatusSerializer,
+            '400': OpenApiResponse(
+                response=DetailMessageSerializer,
+                description='request_id must be a valid UUID',
+            ),
+            '403': OpenApiResponse(
+                response=DetailMessageSerializer,
+                description='Prediction request does not belong to this job',
+            ),
+        },
+    )
+    @action(
+        detail=True,
+        methods=['GET'],
+        url_path=r'video/predictions/(?P<request_id>[^/.]+)',
+        url_name='video-prediction-status',
+    )
+    def video_prediction_status(self, request: ExtendedRequest, pk: int, request_id: str):
+        self.get_object()
+        try:
+            request_uuid = UUID(request_id)
+        except ValueError:
+            return Response(
+                data={'detail': 'request_id must be a valid UUID'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        prediction_request_metadata = self._get_video_prediction_request_metadata(request_id=request_uuid)
+        prediction_request_result = self._get_video_prediction_request_result(request_id=request_uuid)
+
+        if not prediction_request_metadata and not prediction_request_result:
+            response_serializer = JobVideoPredictionStatusSerializer(
+                data={'request_id': request_uuid, 'state': 'expired'}
+            )
+            response_serializer.is_valid(raise_exception=True)
+            return Response(response_serializer.data, status=status.HTTP_200_OK)
+
+        request_job_id = (
+            (prediction_request_metadata or {}).get('job_id')
+            or (prediction_request_result or {}).get('job_id')
+        )
+        if request_job_id != int(pk):
+            return Response(
+                data={'detail': 'Prediction request does not belong to this job'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        state = self._infer_video_prediction_state(prediction_request_result or {})
+        response_data: dict[str, Any] = {
+            'request_id': request_uuid,
+            'state': state,
+        }
+        if prediction_request_metadata:
+            webhook_url = prediction_request_metadata.get('webhook_url')
+            if webhook_url is not None:
+                response_data['webhook_url'] = webhook_url
+
+        if not prediction_request_result:
+            response_data['state'] = 'expired'
+            response_serializer = JobVideoPredictionStatusSerializer(data=response_data)
+            response_serializer.is_valid(raise_exception=True)
+            return Response(response_serializer.data, status=status.HTTP_200_OK)
+
+        if remote_prediction_id := (prediction_request_result or {}).get('remote_prediction_id'):
+            response_data['remote_prediction_id'] = remote_prediction_id
+
+        webhook_payload = (prediction_request_result or {}).get('webhook_payload')
+        if webhook_payload is not None:
+            response_data['webhook_payload'] = webhook_payload
+
+        response_serializer = JobVideoPredictionStatusSerializer(data=response_data)
+        response_serializer.is_valid(raise_exception=True)
+        return Response(response_serializer.data, status=status.HTTP_200_OK)
+
+    @extend_schema(
+        summary='List recent video prediction requests for a job',
+        parameters=[
+            OpenApiParameter(
+                'limit',
+                location=OpenApiParameter.QUERY,
+                type=OpenApiTypes.INT,
+                required=False,
+                description='Max number of recent requests to return (1-100). Defaults to 100.',
+            ),
+        ],
+        responses={'200': JobVideoPredictionRequestListSerializer},
+    )
+    @action(detail=True, methods=['GET'], url_path='video/predictions/requests')
+    def video_prediction_requests(self, request: ExtendedRequest, pk: int):
+        self.get_object()
+
+        try:
+            limit = int(request.query_params.get('limit', self.VIDEO_PREDICTION_REQUEST_LIST_LIMIT))
+        except (TypeError, ValueError):
+            limit = self.VIDEO_PREDICTION_REQUEST_LIST_LIMIT
+        limit = min(max(limit, 1), self.VIDEO_PREDICTION_REQUEST_LIST_LIMIT)
+
+        response_items: list[dict[str, Any]] = []
+        for request_info in self._list_video_prediction_request_index(job_id=int(pk), limit=limit):
+            request_id_raw = request_info.get('request_id')
+            if not request_id_raw:
+                continue
+            try:
+                request_id = UUID(str(request_id_raw))
+            except ValueError:
+                continue
+
+            prediction_request_metadata = self._get_video_prediction_request_metadata(request_id=request_id) or {}
+            prediction_request_result = self._get_video_prediction_request_result(request_id=request_id) or {}
+            status_value = self._infer_video_prediction_state(prediction_request_result)
+            if not prediction_request_result:
+                status_value = 'expired'
+
+            response_item: dict[str, Any] = {
+                'request_id': request_id,
+                'status': status_value,
+                'pathway': (
+                    prediction_request_metadata.get('pathway')
+                    or request_info.get('pathway')
+                    or 'custom'
+                ),
+                'remote_url': (
+                    prediction_request_metadata.get('remote_url')
+                    or request_info.get('remote_url')
+                    or ''
+                ),
+                'created_at': (
+                    prediction_request_metadata.get('created_at')
+                    or request_info.get('created_at')
+                ),
+                'expires_at': (
+                    prediction_request_result.get('expires_at')
+                    or prediction_request_metadata.get('expires_at')
+                    or request_info.get('expires_at')
+                ),
+            }
+
+            submitted_at = prediction_request_result.get('submitted_at')
+            if submitted_at:
+                response_item['submitted_at'] = submitted_at
+
+            webhook_received_at = ((prediction_request_result.get('webhook') or {}) or {}).get('received_at')
+            if webhook_received_at:
+                response_item['updated_at'] = webhook_received_at
+
+            remote_prediction_id = prediction_request_result.get('remote_prediction_id')
+            if remote_prediction_id is not None:
+                response_item['remote_prediction_id'] = str(remote_prediction_id)
+
+            remote_error = (
+                prediction_request_result.get('error')
+                or prediction_request_result.get('webhook_payload', {}).get('error')
+            )
+            if remote_error is not None:
+                response_item['remote_error'] = remote_error
+
+            item_serializer = JobVideoPredictionRequestListItemSerializer(data=response_item)
+            if item_serializer.is_valid():
+                response_items.append(item_serializer.data)
+
+        response_data = {
+            'count': len(response_items),
+            'results': response_items,
+        }
+        response_serializer = JobVideoPredictionRequestListSerializer(data=response_data)
+        response_serializer.is_valid(raise_exception=True)
+        return Response(response_serializer.data, status=status.HTTP_200_OK)
+
+    @extend_schema(
+        summary='Receive webhook payload for a video prediction request (legacy query-param format)',
+        request=JobVideoPredictionWebhookRequestSerializer,
+        responses={
+            '202': OpenApiResponse(
+                description='Webhook payload accepted (including idempotent duplicate/late deliveries)',
+            ),
+            '400': OpenApiResponse(
+                response=DetailMessageSerializer,
+                description='request_id query parameter or token query parameter is missing/invalid',
+            ),
+            '403': OpenApiResponse(
+                response=DetailMessageSerializer,
+                description='Webhook token is invalid or request does not belong to this job',
+            ),
+            '404': OpenApiResponse(
+                response=DetailMessageSerializer,
+                description='Prediction request is unknown or expired',
+            ),
+        },
+    )
+    @action(
+        detail=True,
+        methods=['POST'],
+        url_path='video/predictions/webhook',
+        permission_classes=[],
+        authentication_classes=[],
+    )
+    def video_predictions_webhook(self, request: ExtendedRequest, pk: int):
+        return self._handle_video_predictions_webhook(
+            request=request,
+            pk=pk,
+            request_id_raw=request.query_params.get('request_id'),
+        )
+
+    @extend_schema(
+        summary='Receive webhook payload for a specific video prediction request (path format)',
+        request=JobVideoPredictionWebhookRequestSerializer,
+        responses={
+            '202': OpenApiResponse(
+                description='Webhook payload accepted (including idempotent duplicate/late deliveries)',
+            ),
+            '400': OpenApiResponse(
+                response=DetailMessageSerializer,
+                description='request_id path parameter is missing/invalid',
+            ),
+            '403': OpenApiResponse(
+                response=DetailMessageSerializer,
+                description='Webhook token is invalid or request does not belong to this job',
+            ),
+            '404': OpenApiResponse(
+                response=DetailMessageSerializer,
+                description='Prediction request is unknown or expired',
+            ),
+        },
+    )
+    @action(
+        detail=True,
+        methods=['POST'],
+        url_path=r'video/predictions/webhook/(?P<request_id>[^/.]+)',
+        url_name='video-predictions-webhook-by-id',
+        permission_classes=[],
+        authentication_classes=[],
+    )
+    def video_predictions_webhook_by_id(self, request: ExtendedRequest, pk: int, request_id: str):
+        return self._handle_video_predictions_webhook(
+            request=request,
+            pk=pk,
+            request_id_raw=request_id,
+        )
+
+    def _handle_video_predictions_webhook(
+        self,
+        *,
+        request: ExtendedRequest,
+        pk: int,
+        request_id_raw: str | None,
+    ) -> Response:
+        def _detect_terminal_data_keys(payload: Any) -> list[str]:
+            if not isinstance(payload, dict):
+                return []
+            terminal_data_keys = {
+                "candidate_indices",
+                "error",
+                "keyframes",
+                "output",
+                "result",
+                "selected_indices",
+            }
+            return sorted(key for key in payload.keys() if key in terminal_data_keys)
+
+        def _log_webhook_decision(
+            *,
+            event: str,
+            request_id: UUID,
+            job_id: int,
+            previous_effective_state: str,
+            incoming_raw_status: str,
+            inferred_incoming_state: str,
+            terminal_data_keys_detected: list[str],
+            decision: str,
+            http_code: int,
+            level: str = "info",
+        ) -> None:
+            log_method = slogger.job[job_id].warning if level == "warning" else slogger.job[job_id].info
+            log_method(
+                "Video prediction webhook decision",
+                extra={
+                    "log_fields": {
+                        "event": event,
+                        "request_id": str(request_id),
+                        "job_id": job_id,
+                        "previous_effective_state": previous_effective_state,
+                        "incoming_raw_status": incoming_raw_status,
+                        "inferred_incoming_state": inferred_incoming_state,
+                        "terminal_data_keys_detected": terminal_data_keys_detected,
+                        "decision": decision,
+                        "http_code": http_code,
+                    }
+                },
+            )
+
+        if not request_id_raw:
+            return Response(
+                data={'detail': 'request_id path parameter or query parameter is required'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            request_id = UUID(request_id_raw)
+        except ValueError:
+            return Response(
+                data={'detail': 'request_id must be a valid UUID'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        prediction_request_metadata = self._get_video_prediction_request_metadata(request_id=request_id)
+        prediction_request_result = self._get_video_prediction_request_result(request_id=request_id)
+
+        if not prediction_request_metadata and not prediction_request_result:
+            return Response(
+                data={'detail': 'Prediction request is unknown or expired'},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        request_job_id = (
+            (prediction_request_metadata or {}).get('job_id')
+            or (prediction_request_result or {}).get('job_id')
+        )
+        if request_job_id != int(pk):
+            return Response(
+                data={'detail': 'Prediction request does not belong to this job'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        token = request.query_params.get('token')
+        if not token:
+            return Response(
+                data={'detail': 'token query parameter is required'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if not self._is_valid_video_prediction_webhook_token(
+            token=token,
+            request_id=request_id,
+            job_id=request_job_id,
+        ):
+            return Response(
+                data={'detail': 'Webhook token is invalid or expired'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        current_result = prediction_request_result or {}
+        current_status = self._infer_video_prediction_state(current_result)
+
+        payload_status = 'completed'
+        if isinstance(request.data, dict):
+            raw_status = request.data.get('status')
+            if isinstance(raw_status, str) and raw_status:
+                payload_status = raw_status
+        terminal_data_keys_detected = _detect_terminal_data_keys(request.data)
+
+        incoming_result = {
+            **current_result,
+            'job_id': request_job_id,
+            'status': payload_status,
+            'webhook': {
+                'headers': {
+                    key: value
+                    for key, value in request.headers.items()
+                    if key.lower() in {'content-type', 'x-request-id'}
+                },
+                'status': payload_status,
+                'received_at': timezone.now().isoformat(),
+            },
+            'webhook_payload': request.data,
+        }
+        incoming_state = self._infer_video_prediction_state(incoming_result)
+
+        should_persist = True
+        decision = 'accepted'
+        log_event = 'video_predictions_webhook_accepted'
+        http_code = status.HTTP_202_ACCEPTED
+
+        if current_status != 'pending':
+            existing_payload = current_result.get('webhook_payload')
+            incoming_payload = incoming_result.get('webhook_payload')
+            if (
+                incoming_state == current_status
+                and self._are_semantically_identical(existing_payload, incoming_payload)
+            ):
+                should_persist = False
+                decision = 'ignored_duplicate'
+                log_event = 'video_predictions_webhook_ignored_duplicate'
+            else:
+                merged_payload, payload_merged, payload_conflicts = self._merge_missing_fields(
+                    current=existing_payload,
+                    incoming=incoming_payload,
+                    root='webhook_payload',
+                )
+                has_terminal_conflict = bool(payload_conflicts) or incoming_state != current_status
+                if has_terminal_conflict:
+                    should_persist = False
+                    decision = 'acknowledged_terminal_conflict'
+                    log_event = 'video_predictions_webhook_acknowledged_terminal_conflict'
+                elif payload_merged:
+                    incoming_result['webhook_payload'] = merged_payload
+                    incoming_result['status'] = current_status
+                    decision = 'merged'
+                    log_event = 'video_predictions_webhook_merged'
+                else:
+                    should_persist = False
+                    decision = 'ignored_duplicate'
+                    log_event = 'video_predictions_webhook_ignored_duplicate'
+        else:
+            decision = 'accepted'
+            log_event = 'video_predictions_webhook_accepted'
+
+        if should_persist:
+            incoming_result['status'] = self._infer_video_prediction_state(incoming_result)
+            self._store_video_prediction_request_result(
+                request_id=request_id,
+                result=incoming_result,
+                expires_at=(incoming_result or {}).get('expires_at')
+                or (prediction_request_metadata or {}).get('expires_at'),
+            )
+
+        _log_webhook_decision(
+            event=log_event,
+            request_id=request_id,
+            job_id=int(request_job_id),
+            previous_effective_state=current_status,
+            incoming_raw_status=payload_status,
+            inferred_incoming_state=incoming_state,
+            terminal_data_keys_detected=terminal_data_keys_detected,
+            decision=decision,
+            http_code=http_code,
+            level="info",
+        )
+
+        if settings.DEBUG:
+            return Response(
+                data={
+                    'decision': decision,
+                    'previous_effective_state': current_status,
+                    'incoming_raw_status': payload_status,
+                    'inferred_incoming_state': incoming_state,
+                    'terminal_data_keys_detected': terminal_data_keys_detected,
+                    'http_code': http_code,
+                },
+                status=http_code,
+            )
+
+        return Response(status=http_code)
+
+    @extend_schema(
+        summary='Download a job video by signed token',
+        parameters=[
+            OpenApiParameter(
+                'token',
+                location=OpenApiParameter.QUERY,
+                type=OpenApiTypes.STR,
+                required=True,
+                description='Signed token obtained from /api/jobs/{id}/video/access',
+            ),
+        ],
+        responses={
+            '200': OpenApiResponse(OpenApiTypes.BINARY, description='Video stream'),
+            '400': OpenApiResponse(description='Token is malformed or missing'),
+            '403': OpenApiResponse(description='Token scope does not allow this operation'),
+            '404': OpenApiResponse(description='Video job or source file was not found'),
+            '410': OpenApiResponse(description='Token has expired'),
+            '422': OpenApiResponse(description='Video access for cloud-backed media is not supported yet'),
+        },
+    )
+    @action(
+        detail=True,
+        methods=['GET'],
+        url_path='video/download',
+        permission_classes=[],
+        authentication_classes=[],
+    )
+    def video_download(self, request: ExtendedRequest, pk: int):
+        self._log_video_download_attempt(pk)
+
+        def _fail_download(*, reason: str, status_code: int, message: str) -> Response:
+            self._log_video_download_failure(job_id=pk, reason=reason)
+            return Response(data=message, status=status_code)
+
+        token = request.query_params.get('token')
+        if not token:
+            return _fail_download(
+                reason="missing_token",
+                status_code=status.HTTP_400_BAD_REQUEST,
+                message='Token is required',
+            )
+
+        signer = signing.TimestampSigner(salt=self.VIDEO_DOWNLOAD_TOKEN_SALT)
+        try:
+            unsigned_payload = signer.unsign(
+                token,
+                max_age=self.VIDEO_DOWNLOAD_TOKEN_TTL_SECONDS,
+            )
+            payload = json.loads(unsigned_payload)
+        except signing.SignatureExpired:
+            return _fail_download(
+                reason="token_expired",
+                status_code=status.HTTP_410_GONE,
+                message='Token has expired',
+            )
+        except (signing.BadSignature, json.JSONDecodeError, TypeError):
+            return _fail_download(
+                reason="invalid_token",
+                status_code=status.HTTP_400_BAD_REQUEST,
+                message='Token is invalid',
+            )
+
+        if (
+            payload.get('job_id') != int(pk)
+            or payload.get('action') != self.VIDEO_DOWNLOAD_TOKEN_ACTION
+        ):
+            return _fail_download(
+                reason="token_scope_mismatch",
+                status_code=status.HTTP_403_FORBIDDEN,
+                message='Token does not permit downloading this job video',
+            )
+
+        nonce = payload.get("nonce")
+        if settings.JOB_VIDEO_DOWNLOAD_TOKEN_ONE_TIME_USE and not self._consume_video_download_token_nonce(
+            job_id=pk,
+            nonce=nonce,
+        ):
+            return _fail_download(
+                reason="replayed_or_unknown_token",
+                status_code=status.HTTP_403_FORBIDDEN,
+                message='Token has already been used or is invalid',
+            )
+
+        db_job = models.Job.objects.select_related('segment__task__data', 'segment__task__data__video').filter(
+            pk=pk
+        ).first()
+        if not db_job:
+            raise NotFound('Job does not exist')
+
+        db_data = db_job.segment.task.data
+        if not hasattr(db_data, 'video'):
+            return _fail_download(
+                reason="video_source_missing",
+                status_code=status.HTTP_404_NOT_FOUND,
+                message='Video source is not available',
+            )
+        source_storage = self._resolve_video_source_storage(db_data)
+        if source_storage['storage'] == StorageChoice.CLOUD_STORAGE:
+            return _fail_download(
+                reason="unsupported_cloud_storage",
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                message='Video access for cloud-backed media is not supported yet',
+            )
+
+        try:
+            video_abs = self._resolve_video_absolute_path(db_data)
+        except ValidationError:
+            return _fail_download(
+                reason="video_source_invalid_path",
+                status_code=status.HTTP_404_NOT_FOUND,
+                message='Video source is not available',
+            )
+
+        if not video_abs.is_file():
+            return _fail_download(
+                reason="video_file_not_found",
+                status_code=status.HTTP_404_NOT_FOUND,
+                message='Video file was not found',
+            )
+
+        video_size = video_abs.stat().st_size
+        if (
+            settings.JOB_VIDEO_DOWNLOAD_MAX_SIZE_BYTES > 0
+            and video_size > settings.JOB_VIDEO_DOWNLOAD_MAX_SIZE_BYTES
+        ):
+            return _fail_download(
+                reason="video_size_limit_exceeded",
+                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                message='Video file exceeds download size limit',
+            )
+
+        sendfile_backend = str(getattr(settings, "SENDFILE_BACKEND", ""))
+        use_sendfile_offload = (
+            "nginx" in sendfile_backend.lower()
+            and "asgi.version" not in request.META
+        )
+
+        if use_sendfile_offload:
+            response = sendfile(request, str(video_abs))
+        else:
+            response = FileResponse(open(video_abs, 'rb'))
+
+        if use_sendfile_offload and settings.JOB_VIDEO_DOWNLOAD_RATE_LIMIT_BPS > 0:
+            response["X-Accel-Limit-Rate"] = str(settings.JOB_VIDEO_DOWNLOAD_RATE_LIMIT_BPS)
+        self._log_video_download_success(job_id=pk, video_size=video_size)
+        return response
+
+    @classmethod
+    def _video_download_nonce_cache_key(cls, *, job_id: int, nonce: str) -> str:
+        nonce_hash = sha256(nonce.encode("utf-8")).hexdigest()
+        return f"job-video-download:nonce:{job_id}:{nonce_hash}"
+
+    @staticmethod
+    def _video_prediction_request_meta_cache_key(*, request_id: UUID) -> str:
+        return f"job-video-prediction:req:{request_id}:meta"
+
+    @staticmethod
+    def _video_prediction_request_result_cache_key(*, request_id: UUID) -> str:
+        return f"job-video-prediction:req:{request_id}:result"
+
+    @staticmethod
+    def _video_prediction_request_index_cache_key(*, job_id: int) -> str:
+        return f"job-video-prediction:job:{job_id}:requests"
+
+    @staticmethod
+    def _video_prediction_global_index_cache_key() -> str:
+        return "job-video-prediction:requests:recent"
+
+    def _append_video_prediction_request_index(
+        self,
+        *,
+        job_id: int,
+        request_info: dict[str, Any],
+    ) -> None:
+        self._append_video_prediction_request_to_index(
+            cache_key=self._video_prediction_request_index_cache_key(job_id=job_id),
+            request_info=request_info,
+            max_items=self.VIDEO_PREDICTION_REQUEST_LIST_LIMIT,
+        )
+        self._append_video_prediction_request_to_index(
+            cache_key=self._video_prediction_global_index_cache_key(),
+            request_info=request_info,
+            max_items=self.VIDEO_PREDICTION_RECONCILIATION_MAX_SCAN,
+        )
+
+    def _append_video_prediction_request_to_index(
+        self,
+        *,
+        cache_key: str,
+        request_info: dict[str, Any],
+        max_items: int,
+    ) -> None:
+        current_index = cache.get(cache_key)
+        if not isinstance(current_index, list):
+            current_index = []
+
+        now = timezone.now()
+        active_index = []
+        for item in current_index:
+            if not isinstance(item, dict):
+                continue
+            parsed_expires_at = parse_datetime(str(item.get('expires_at') or ''))
+            if parsed_expires_at and timezone.is_naive(parsed_expires_at):
+                parsed_expires_at = timezone.make_aware(parsed_expires_at, timezone=timezone.utc)
+            if parsed_expires_at and parsed_expires_at > now:
+                active_index.append(item)
+
+        active_index.append(request_info)
+        active_index = active_index[-max_items:]
+        cache.set(cache_key, active_index, timeout=self.VIDEO_PREDICTION_REQUEST_TTL_SECONDS)
+
+    def _list_video_prediction_request_index(self, *, job_id: int, limit: int) -> list[dict[str, Any]]:
+        cache_key = self._video_prediction_request_index_cache_key(job_id=job_id)
+        raw_index = cache.get(cache_key)
+        if not isinstance(raw_index, list):
+            return []
+
+        now = timezone.now()
+        active_index = []
+        for item in raw_index:
+            if not isinstance(item, dict):
+                continue
+            parsed_expires_at = parse_datetime(str(item.get('expires_at') or ''))
+            if parsed_expires_at and timezone.is_naive(parsed_expires_at):
+                parsed_expires_at = timezone.make_aware(parsed_expires_at, timezone=timezone.utc)
+            if parsed_expires_at and parsed_expires_at > now:
+                active_index.append(item)
+
+        if len(active_index) != len(raw_index):
+            cache.set(
+                cache_key,
+                active_index[-self.VIDEO_PREDICTION_REQUEST_LIST_LIMIT:],
+                timeout=self.VIDEO_PREDICTION_REQUEST_TTL_SECONDS,
+            )
+
+        return list(reversed(active_index[-limit:]))
+
+    @classmethod
+    def reconcile_pending_video_prediction_requests(cls, *, limit: int | None = None) -> dict[str, int]:
+        scan_limit = min(
+            max(limit or cls.VIDEO_PREDICTION_RECONCILIATION_MAX_SCAN, 1),
+            cls.VIDEO_PREDICTION_RECONCILIATION_MAX_SCAN,
+        )
+        raw_index = cache.get(cls._video_prediction_global_index_cache_key())
+        if not isinstance(raw_index, list):
+            return {"scanned": 0, "stale": 0, "reconciled": 0, "timed_out": 0, "skipped": 0}
+
+        now = timezone.now()
+        scanned = stale = reconciled = timed_out = skipped = 0
+        active_index: list[dict[str, Any]] = []
+        for item in raw_index[-scan_limit:]:
+            if not isinstance(item, dict):
+                continue
+
+            request_id_raw = item.get("request_id")
+            if not request_id_raw:
+                continue
+
+            parsed_expires_at = parse_datetime(str(item.get("expires_at") or ""))
+            if parsed_expires_at and timezone.is_naive(parsed_expires_at):
+                parsed_expires_at = timezone.make_aware(parsed_expires_at, timezone=timezone.utc)
+            if parsed_expires_at and parsed_expires_at > now:
+                active_index.append(item)
+
+            try:
+                request_id = UUID(str(request_id_raw))
+            except ValueError:
+                continue
+
+            scanned += 1
+            if not cls._is_pending_request_stale(request_id=request_id, now=now):
+                continue
+
+            stale += 1
+            transition = cls._reconcile_stale_video_prediction_request(request_id=request_id, now=now)
+            if transition == "reconciled":
+                reconciled += 1
+            elif transition == "webhook_timeout":
+                timed_out += 1
+            else:
+                skipped += 1
+
+        cache.set(
+            cls._video_prediction_global_index_cache_key(),
+            active_index[-cls.VIDEO_PREDICTION_RECONCILIATION_MAX_SCAN :],
+            timeout=cls.VIDEO_PREDICTION_REQUEST_TTL_SECONDS,
+        )
+        return {
+            "scanned": scanned,
+            "stale": stale,
+            "reconciled": reconciled,
+            "timed_out": timed_out,
+            "skipped": skipped,
+        }
+
+    @classmethod
+    def _is_pending_request_stale(cls, *, request_id: UUID, now: datetime) -> bool:
+        prediction_request_result = cls()._get_video_prediction_request_result(request_id=request_id) or {}
+        if cls._infer_video_prediction_state(prediction_request_result) != "pending":
+            return False
+
+        submitted_or_created_at = prediction_request_result.get("submitted_at")
+        if not submitted_or_created_at:
+            prediction_request_metadata = cls()._get_video_prediction_request_metadata(request_id=request_id) or {}
+            submitted_or_created_at = prediction_request_metadata.get("created_at")
+
+        parsed_submitted_at = parse_datetime(str(submitted_or_created_at or ""))
+        if parsed_submitted_at is None:
+            return False
+        if timezone.is_naive(parsed_submitted_at):
+            parsed_submitted_at = timezone.make_aware(parsed_submitted_at, timezone=timezone.utc)
+
+        return (now - parsed_submitted_at).total_seconds() >= cls.VIDEO_PREDICTION_WEBHOOK_GRACE_TIMEOUT_SECONDS
+
+    @classmethod
+    def _resolve_remote_prediction_status_url(
+        cls, *, metadata: dict[str, Any], result: dict[str, Any]
+    ) -> str | None:
+        remote_prediction_id = result.get("remote_prediction_id")
+        if not remote_prediction_id:
+            return None
+
+        if str(remote_prediction_id).startswith(("http://", "https://")):
+            return str(remote_prediction_id)
+
+        location = ((metadata.get("submit_response") or {}).get("headers") or {}).get("location")
+        if isinstance(location, str) and location.startswith(("http://", "https://")):
+            return location
+
+        remote_url = str(metadata.get("remote_url") or "").rstrip("/")
+        if remote_url.endswith("/predictions"):
+            return f"{remote_url}/{remote_prediction_id}"
+
+        return None
+
+    @classmethod
+    def _reconcile_stale_video_prediction_request(cls, *, request_id: UUID, now: datetime) -> str:
+        view = cls()
+        prediction_request_metadata = view._get_video_prediction_request_metadata(request_id=request_id) or {}
+        prediction_request_result = view._get_video_prediction_request_result(request_id=request_id) or {}
+        job_id = prediction_request_result.get("job_id") or prediction_request_metadata.get("job_id")
+        if not job_id:
+            return "skipped"
+
+        if cls._infer_video_prediction_state(prediction_request_result) != "pending":
+            return "skipped"
+
+        expires_at = prediction_request_result.get("expires_at") or prediction_request_metadata.get("expires_at")
+        remote_status_url = cls._resolve_remote_prediction_status_url(
+            metadata=prediction_request_metadata,
+            result=prediction_request_result,
+        )
+
+        transition_event = "webhook_timeout"
+        transition_reason = "webhook_timeout"
+        reconciliation_payload: dict[str, Any] | None = None
+        normalized_state = "failed"
+
+        if remote_status_url:
+            try:
+                with make_requests_session() as session:
+                    remote_response = session.get(
+                        remote_status_url,
+                        headers={"Accept": "application/json"},
+                        timeout=15,
+                        proxies=PROXIES_FOR_UNTRUSTED_URLS or {},
+                    )
+                remote_body = remote_response.json() if remote_response.content else {}
+                remote_status = remote_body.get("status") if isinstance(remote_body, dict) else None
+                normalized_state = cls._infer_video_prediction_state(
+                    {
+                        "status": remote_status,
+                        "webhook_payload": remote_body if isinstance(remote_body, dict) else None,
+                    }
+                )
+                if normalized_state == "pending":
+                    normalized_state = "failed"
+                    transition_reason = "webhook_timeout"
+                else:
+                    transition_event = "reconciled"
+                    transition_reason = "provider_status_poll"
+                reconciliation_payload = {
+                    "status_code": remote_response.status_code,
+                    "status_url": remote_status_url,
+                    "response": remote_body if isinstance(remote_body, dict) else {"raw": remote_body},
+                    "checked_at": now.isoformat(),
+                }
+            except requests.RequestException as exc:
+                reconciliation_payload = {
+                    "status_url": remote_status_url,
+                    "checked_at": now.isoformat(),
+                    "error_class": exc.__class__.__name__,
+                    "error_detail": parse_exception_message(exc),
+                }
+                transition_reason = "webhook_timeout"
+
+        finalized_result: dict[str, Any] = {
+            **prediction_request_result,
+            "job_id": job_id,
+            "status": normalized_state,
+            "error": transition_reason if normalized_state == "failed" else prediction_request_result.get("error"),
+            "reconciliation": {
+                "event": transition_event,
+                "reason": transition_reason,
+                "at": now.isoformat(),
+                **({"provider_status": reconciliation_payload} if reconciliation_payload is not None else {}),
+            },
+        }
+        view._store_video_prediction_request_result(
+            request_id=request_id,
+            result=finalized_result,
+            expires_at=expires_at,
+        )
+        slogger.job[int(job_id)].info(
+            "Reconciled stale video prediction request",
+            extra={
+                "log_fields": {
+                    "event": transition_event,
+                    "request_id": str(request_id),
+                    "job_id": int(job_id),
+                    "status": normalized_state,
+                    "reason": transition_reason,
+                    "remote_status_url": remote_status_url,
+                }
+            },
+        )
+        return transition_event
+
+    @staticmethod
+    def _normalize_video_prediction_state(*, raw_status: Any) -> str:
+        status_value = str(raw_status or '').strip().lower()
+        if status_value in {'', 'pending', 'processing', 'queued', 'running'}:
+            return 'pending'
+        if status_value in {
+            'failed',
+            'failure',
+            'error',
+            'errored',
+            'cancelled',
+            'canceled',
+            'queue_timeout',
+            'queue_full',
+            'dispatch_timeout',
+            'dispatch_queue_full',
+        }:
+            return 'failed'
+        if status_value == 'expired':
+            return 'expired'
+        return 'completed'
+
+    @classmethod
+    def _infer_video_prediction_state(cls, result: dict[str, Any] | None) -> str:
+        raw_status = (result or {}).get("status")
+        status_value = str(raw_status or "").strip().lower()
+        if status_value in {
+            "failed",
+            "failure",
+            "error",
+            "errored",
+            "cancelled",
+            "canceled",
+        }:
+            return "failed"
+
+        webhook_payload = (result or {}).get("webhook_payload")
+        if cls._has_terminal_video_prediction_payload(webhook_payload):
+            return "completed"
+
+        return cls._normalize_video_prediction_state(raw_status=raw_status)
+
+    @staticmethod
+    def _has_terminal_video_prediction_payload(webhook_payload: Any) -> bool:
+        if not isinstance(webhook_payload, dict):
+            return False
+
+        def _is_non_empty(value: Any) -> bool:
+            if value is None:
+                return False
+            if isinstance(value, (str, bytes)):
+                return bool(value.strip()) if isinstance(value, str) else bool(value)
+            if isinstance(value, (dict, list, tuple, set)):
+                return len(value) > 0
+            return True
+
+        # Terminal data beats non-terminal status string.
+        terminal_payload_keys = (
+            "output",
+            "keyframes",
+            "selected_indices",
+            "candidate_indices",
+        )
+        return any(_is_non_empty(webhook_payload.get(key)) for key in terminal_payload_keys)
+
+    @classmethod
+    def _are_semantically_identical(cls, current: Any, incoming: Any) -> bool:
+        if isinstance(current, dict) and isinstance(incoming, dict):
+            return current == incoming
+        return current == incoming
+
+    @classmethod
+    def _merge_missing_fields(
+        cls,
+        *,
+        current: Any,
+        incoming: Any,
+        root: str,
+    ) -> tuple[Any, bool, list[str]]:
+        merged = False
+        conflicts: list[str] = []
+
+        if isinstance(current, dict) and isinstance(incoming, dict):
+            result = dict(current)
+            for key, incoming_value in incoming.items():
+                path = f"{root}.{key}"
+                if key not in result or cls._is_empty_webhook_value(result[key]):
+                    if not cls._is_empty_webhook_value(incoming_value):
+                        result[key] = incoming_value
+                        merged = True
+                    continue
+
+                current_value = result[key]
+                if isinstance(current_value, dict) and isinstance(incoming_value, dict):
+                    nested, nested_merged, nested_conflicts = cls._merge_missing_fields(
+                        current=current_value,
+                        incoming=incoming_value,
+                        root=path,
+                    )
+                    result[key] = nested
+                    merged = merged or nested_merged
+                    conflicts.extend(nested_conflicts)
+                elif current_value != incoming_value and not cls._is_empty_webhook_value(incoming_value):
+                    conflicts.append(path)
+
+            return result, merged, conflicts
+
+        if cls._is_empty_webhook_value(current) and not cls._is_empty_webhook_value(incoming):
+            return incoming, True, conflicts
+
+        if current != incoming and not cls._is_empty_webhook_value(incoming):
+            conflicts.append(root)
+
+        return current, False, conflicts
+
+    @staticmethod
+    def _is_empty_webhook_value(value: Any) -> bool:
+        if value is None:
+            return True
+        if isinstance(value, str):
+            return value.strip() == ''
+        if isinstance(value, (dict, list, tuple, set)):
+            return len(value) == 0
+        return False
+
+    @staticmethod
+    def _extract_remote_prediction_id(
+        *,
+        remote_body: Any,
+        remote_headers: dict[str, Any],
+    ) -> str | None:
+        if isinstance(remote_body, dict):
+            for key in ('id', 'prediction_id', 'request_id'):
+                raw_id = remote_body.get(key)
+                if raw_id is not None:
+                    return str(raw_id)
+
+        for key in ('x-request-id', 'location'):
+            raw_id = remote_headers.get(key)
+            if raw_id:
+                return str(raw_id)
+
+        return None
+
+    @classmethod
+    def _build_remote_prediction_error_payload(
+        cls,
+        *,
+        remote_body: Any,
+        remote_text: str | None,
+    ) -> Any:
+        if remote_body is not None:
+            return cls._sanitize_remote_prediction_error(remote_body)
+
+        if remote_text:
+            return cls._sanitize_remote_prediction_error(remote_text)
+
+        return None
+
+    @classmethod
+    def _sanitize_remote_prediction_error(cls, value: Any, *, depth: int = 0) -> Any:
+        max_depth = 3
+        max_items = 20
+        max_text_length = 500
+        redacted_value = "[REDACTED]"
+        sensitive_key_pattern = re.compile(
+            r"(authorization|token|secret|password|passwd|api[-_]?key|session|cookie)",
+            flags=re.IGNORECASE,
+        )
+
+        if depth > max_depth:
+            return "[TRUNCATED]"
+
+        if isinstance(value, dict):
+            sanitized_dict: dict[str, Any] = {}
+            for idx, (key, item_value) in enumerate(value.items()):
+                if idx >= max_items:
+                    sanitized_dict["..."] = "[TRUNCATED]"
+                    break
+                key_str = str(key)
+                if sensitive_key_pattern.search(key_str):
+                    sanitized_dict[key_str] = redacted_value
+                    continue
+                sanitized_dict[key_str] = cls._sanitize_remote_prediction_error(
+                    item_value,
+                    depth=depth + 1,
+                )
+            return sanitized_dict
+
+        if isinstance(value, list):
+            sanitized_list = [
+                cls._sanitize_remote_prediction_error(item, depth=depth + 1)
+                for item in value[:max_items]
+            ]
+            if len(value) > max_items:
+                sanitized_list.append("[TRUNCATED]")
+            return sanitized_list
+
+        if isinstance(value, str):
+            return value[:max_text_length]
+
+        return value
+
+    @classmethod
+    def _make_video_prediction_webhook_token(cls, *, request_id: UUID, job_id: int) -> str:
+        signer = signing.TimestampSigner(salt=cls.VIDEO_PREDICTION_WEBHOOK_TOKEN_SALT)
+        return signer.sign(f'{job_id}:{request_id}')
+
+    @classmethod
+    def _is_valid_video_prediction_webhook_token(
+        cls,
+        *,
+        token: str,
+        request_id: UUID,
+        job_id: int,
+    ) -> bool:
+        signer = signing.TimestampSigner(salt=cls.VIDEO_PREDICTION_WEBHOOK_TOKEN_SALT)
+        try:
+            unsigned_payload = signer.unsign(
+                token,
+                max_age=cls.VIDEO_PREDICTION_REQUEST_TTL_SECONDS,
+            )
+        except signing.BadSignature:
+            return False
+
+        return unsigned_payload == f'{job_id}:{request_id}'
+
+    def _store_video_prediction_request_metadata(
+        self,
+        *,
+        request_id: UUID,
+        metadata: dict[str, Any],
+    ) -> None:
+        cache.set(
+            self._video_prediction_request_meta_cache_key(request_id=request_id),
+            metadata,
+            timeout=self.VIDEO_PREDICTION_REQUEST_TTL_SECONDS,
+        )
+
+    def _store_video_prediction_request_result(
+        self,
+        *,
+        request_id: UUID,
+        result: dict[str, Any],
+        expires_at: str | None = None,
+    ) -> None:
+        result_expires_at = expires_at or result.get("expires_at")
+        timeout = self._resolve_video_prediction_status_timeout(expires_at=result_expires_at)
+        if result_expires_at and "expires_at" not in result:
+            result = {**result, "expires_at": result_expires_at}
+        cache.set(
+            self._video_prediction_request_result_cache_key(request_id=request_id),
+            result,
+            timeout=timeout,
+        )
+
+    def _get_video_prediction_request_metadata(self, *, request_id: UUID) -> dict[str, Any] | None:
+        cached_metadata = cache.get(self._video_prediction_request_meta_cache_key(request_id=request_id))
+        return cached_metadata if isinstance(cached_metadata, dict) else None
+
+    def _get_video_prediction_request_result(self, *, request_id: UUID) -> dict[str, Any] | None:
+        cached_result = cache.get(self._video_prediction_request_result_cache_key(request_id=request_id))
+        return cached_result if isinstance(cached_result, dict) else None
+
+    def _resolve_video_prediction_status_timeout(self, *, expires_at: str | None) -> int:
+        if not expires_at:
+            return self.VIDEO_PREDICTION_REQUEST_TTL_SECONDS
+
+        parsed_expires_at = parse_datetime(expires_at)
+        if parsed_expires_at is None:
+            return self.VIDEO_PREDICTION_REQUEST_TTL_SECONDS
+
+        if timezone.is_naive(parsed_expires_at):
+            parsed_expires_at = timezone.make_aware(parsed_expires_at, timezone=timezone.utc)
+
+        remaining_seconds = int((parsed_expires_at - timezone.now()).total_seconds())
+        if remaining_seconds <= 0:
+            return 1
+
+        return min(remaining_seconds, self.VIDEO_PREDICTION_REQUEST_TTL_SECONDS)
+
+    def _store_video_download_token_nonce(self, *, token: str, payload: str) -> None:
+        if not settings.JOB_VIDEO_DOWNLOAD_TOKEN_ONE_TIME_USE:
+            return
+
+        parsed_payload = json.loads(payload)
+        nonce = parsed_payload.get("nonce")
+        job_id = parsed_payload.get("job_id")
+        if not isinstance(nonce, str) or not isinstance(job_id, int):
+            return
+
+        cache_key = self._video_download_nonce_cache_key(job_id=job_id, nonce=nonce)
+        cache.set(cache_key, token, timeout=self.VIDEO_DOWNLOAD_TOKEN_TTL_SECONDS)
+
+    def _consume_video_download_token_nonce(self, *, job_id: int, nonce: Any) -> bool:
+        if not isinstance(nonce, str):
+            return False
+
+        cache_key = self._video_download_nonce_cache_key(job_id=job_id, nonce=nonce)
+        if not cache.get(cache_key):
+            return False
+        cache.delete(cache_key)
+        return True
+
+    def _log_video_download_attempt(self, job_id: int) -> None:
+        slogger.job[job_id].info(
+            "Attempted signed video download",
+            extra={"log_fields": {"event": "video_download_attempted", "job_id": job_id}},
+        )
+
+    def _log_video_download_success(self, *, job_id: int, video_size: int) -> None:
+        slogger.job[job_id].info(
+            "Succeeded signed video download",
+            extra={
+                "log_fields": {
+                    "event": "video_download_succeeded",
+                    "job_id": job_id,
+                    "video_size_bytes": video_size,
+                }
+            },
+        )
+
+    def _log_video_download_failure(self, *, job_id: int, reason: str) -> None:
+        slogger.job[job_id].warning(
+            "Failed signed video download",
+            extra={
+                "log_fields": {
+                    "event": "video_download_failed",
+                    "job_id": job_id,
+                    "reason": reason,
+                }
+            },
+        )
 
     @extend_schema(
         methods=["GET"],
