@@ -68,8 +68,8 @@ export default function HiddenIssueLabel(props: Props): ReactPortal {
                 ref={ref}
                 id={elementID}
                 onClick={onClick}
-                onMouseEnter={highlight}
-                onMouseLeave={blur}
+                onPointerEnter={highlight}
+                onPointerLeave={blur}
                 style={{ top, left, transform: `scale(${scale}) rotate(${angle}deg)` }}
                 className='cvat-hidden-issue-label'
             >

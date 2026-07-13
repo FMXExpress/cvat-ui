@@ -15,6 +15,11 @@ html, body {
     width: 100%;
     height: 100%;
     margin: 0;
+
+    // removes the double-tap-to-zoom gesture (and its click delay) from the
+    // app chrome on touch devices; the annotation canvas sets its own
+    // stricter touch-action
+    touch-action: manipulation;
 }
 
 .cvat-spinner {

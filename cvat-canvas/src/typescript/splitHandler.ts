@@ -33,13 +33,13 @@ export class SplitHandlerImpl implements SplitHandler {
     private release(): void {
         if (this.initialized) {
             this.resetShape();
-            this.canvas.node.removeEventListener('mousemove', this.findObject);
+            this.canvas.node.removeEventListener('pointermove', this.findObject);
             this.initialized = false;
         }
     }
 
     private initSplitting(): void {
-        this.canvas.node.addEventListener('mousemove', this.findObject);
+        this.canvas.node.addEventListener('pointermove', this.findObject);
         this.initialized = true;
         this.splitDone = false;
         this.startTimestamp = Date.now();

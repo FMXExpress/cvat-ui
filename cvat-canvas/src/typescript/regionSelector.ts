@@ -6,7 +6,7 @@
 import * as SVG from 'svg.js';
 
 import consts from './consts';
-import { translateToSVG } from './shared';
+import { translateToSVG, isInteractionPointer } from './shared';
 import { Geometry } from './canvasModel';
 
 export interface RegionSelector {
@@ -53,8 +53,15 @@ export class RegionSelectorImpl implements RegionSelector {
         }
     };
 
+    private onPointerCancel = (): void => {
+        if (this.selectionRect) {
+            this.selectionRect.remove();
+            this.selectionRect = null;
+        }
+    };
+
     private onMouseDown = (event: MouseEvent): void => {
-        if (!this.selectionRect && !event.altKey) {
+        if (!this.selectionRect && !event.altKey && isInteractionPointer(event)) {
             const point = translateToSVG((this.canvas.node as any) as SVGSVGElement, [event.clientX, event.clientY]);
             this.startSelectionPoint = {
                 x: point[0],
@@ -88,15 +95,17 @@ export class RegionSelectorImpl implements RegionSelector {
     };
 
     private startSelection(): void {
-        this.canvas.node.addEventListener('mousemove', this.onMouseMove);
-        this.canvas.node.addEventListener('mousedown', this.onMouseDown);
-        this.canvas.node.addEventListener('mouseup', this.onMouseUp);
+        this.canvas.node.addEventListener('pointermove', this.onMouseMove);
+        this.canvas.node.addEventListener('pointerdown', this.onMouseDown);
+        this.canvas.node.addEventListener('pointerup', this.onMouseUp);
+        this.canvas.node.addEventListener('pointercancel', this.onPointerCancel);
     }
 
     private stopSelection(): void {
-        this.canvas.node.removeEventListener('mousemove', this.onMouseMove);
-        this.canvas.node.removeEventListener('mousedown', this.onMouseDown);
-        this.canvas.node.removeEventListener('mouseup', this.onMouseUp);
+        this.canvas.node.removeEventListener('pointermove', this.onMouseMove);
+        this.canvas.node.removeEventListener('pointerdown', this.onMouseDown);
+        this.canvas.node.removeEventListener('pointerup', this.onMouseUp);
+        this.canvas.node.removeEventListener('pointercancel', this.onPointerCancel);
     }
 
     private release(): void {

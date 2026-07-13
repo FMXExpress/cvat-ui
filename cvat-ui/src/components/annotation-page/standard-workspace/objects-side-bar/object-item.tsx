@@ -101,7 +101,7 @@ function ObjectItemComponent(props: Props): JSX.Element {
     return (
         <div style={{ display: 'flex', marginBottom: '1px' }}>
             <div
-                onMouseEnter={activateState}
+                onPointerEnter={activateState}
                 id={`cvat-objects-sidebar-state-item-${clientID}`}
                 className={className}
                 style={{ '--state-item-background': `${color}` } as React.CSSProperties}
@@ -163,7 +163,7 @@ function ObjectItemComponent(props: Props): JSX.Element {
                                     readonly={readonly}
                                     parentID={clientID}
                                     clientID={element}
-                                    onMouseLeave={activateState}
+                                    onPointerLeave={activateState}
                                 />
                             )),
                         }]}

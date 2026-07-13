@@ -5,6 +5,7 @@
 
 import React from 'react';
 import Popover, { PopoverProps } from 'antd/lib/popover';
+import { dispatchDismissEvents } from 'utils/pointer-events';
 
 interface OwnProps {
     overlayClassName?: string;
@@ -31,7 +32,7 @@ export default function withVisibilityHandling(WrappedComponent: typeof Popover,
                     if (_visible) {
                         const [element] = window.document.getElementsByClassName(popoverClassName);
                         if (element) {
-                            element.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+                            dispatchDismissEvents(element);
                             (element as HTMLElement).style.pointerEvents = '';
                             (element as HTMLElement).style.opacity = '';
                         }

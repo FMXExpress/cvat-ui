@@ -604,7 +604,7 @@ class CanvasWrapperComponent extends React.PureComponent<Props> {
     public componentWillUnmount(): void {
         const { canvasInstance } = this.props as { canvasInstance: Canvas };
 
-        canvasInstance.html().removeEventListener('mousedown', this.onCanvasMouseDown);
+        canvasInstance.html().removeEventListener('pointerdown', this.onCanvasPointerDown);
         canvasInstance.html().removeEventListener('click', this.onCanvasClicked);
         canvasInstance.html().removeEventListener('canvas.editstart', this.onCanvasEditStart);
         canvasInstance.html().removeEventListener('canvas.edited', this.onCanvasEditDone);
@@ -758,7 +758,7 @@ class CanvasWrapperComponent extends React.PureComponent<Props> {
         onStartIssue(points);
     };
 
-    private onCanvasMouseDown = (e: MouseEvent): void => {
+    private onCanvasPointerDown = (e: PointerEvent): void => {
         const { workspace, activatedStateID, onActivateObject } = this.props;
 
         if ((e.target as HTMLElement).tagName === 'svg' && e.button !== 2) {
@@ -1069,7 +1069,7 @@ class CanvasWrapperComponent extends React.PureComponent<Props> {
             { once: true },
         );
 
-        canvasInstance.html().addEventListener('mousedown', this.onCanvasMouseDown);
+        canvasInstance.html().addEventListener('pointerdown', this.onCanvasPointerDown);
         canvasInstance.html().addEventListener('click', this.onCanvasClicked);
         canvasInstance.html().addEventListener('canvas.editstart', this.onCanvasEditStart);
         canvasInstance.html().addEventListener('canvas.edited', this.onCanvasEditDone);

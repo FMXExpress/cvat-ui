@@ -100,9 +100,9 @@ function OrganizationTopBar(props: Readonly<Props>): JSX.Element {
             }
         };
 
-        window.addEventListener('mousedown', listener);
+        window.addEventListener('pointerdown', listener);
         return () => {
-            window.removeEventListener('mousedown', listener);
+            window.removeEventListener('pointerdown', listener);
         };
     });
 

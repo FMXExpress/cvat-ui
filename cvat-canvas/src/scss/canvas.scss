@@ -336,6 +336,15 @@ g.cvat_canvas_shape_occluded {
     background-color: inherit;
     overflow: hidden;
     position: relative;
+
+    // required for pen/touch annotation: without it the browser turns
+    // pen/finger drags into scrolling or page zoom and aborts the
+    // gesture with pointercancel
+    touch-action: none;
+    overscroll-behavior: none;
+    user-select: none;
+    -webkit-user-select: none;
+    -webkit-touch-callout: none;
 }
 
 .cvat-canvas-highlight-enabled {

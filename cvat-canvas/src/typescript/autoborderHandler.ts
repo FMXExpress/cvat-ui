@@ -5,6 +5,7 @@
 import * as SVG from 'svg.js';
 
 import consts from './consts';
+import { isInteractionPointer } from './shared';
 import { Configuration, Geometry } from './canvasModel';
 
 interface TransformedShape {
@@ -51,7 +52,7 @@ export class AutoborderHandlerImpl implements AutoborderHandler {
         this.groups.forEach((group: SVGGElement): void => {
             const groupID = group.dataset.groupId;
             Array.from(group.children).forEach((circle: SVGCircleElement, pointID: number): void => {
-                circle.removeEventListener('click', this.listeners[+groupID][pointID].click);
+                circle.removeEventListener('pointerdown', this.listeners[+groupID][pointID].click);
                 circle.removeEventListener('dblclick', this.listeners[+groupID][pointID].click);
                 circle.remove();
             });
@@ -127,6 +128,7 @@ export class AutoborderHandlerImpl implements AutoborderHandler {
 
                         const click = (event: MouseEvent): void => {
                             event.stopPropagation();
+                            if (!isInteractionPointer(event)) return;
 
                             // another shape was clicked
                             if (this.auxiliaryGroupID !== null && this.auxiliaryGroupID !== groupID) {
@@ -214,7 +216,7 @@ export class AutoborderHandlerImpl implements AutoborderHandler {
                             dblclick,
                         };
 
-                        circle.addEventListener('mousedown', this.listeners[groupID][pointID].click);
+                        circle.addEventListener('pointerdown', this.listeners[groupID][pointID].click);
                         circle.addEventListener('dblclick', this.listeners[groupID][pointID].click);
                         return circle;
                     },

@@ -17,12 +17,12 @@ interface OwnProps {
     parentID: number;
     clientID: number;
     readonly: boolean;
-    onMouseLeave?: () => void;
+    onPointerLeave?: () => void;
 }
 
 function ObjectItemElementComponent(props: OwnProps): JSX.Element {
     const {
-        clientID, parentID, readonly, onMouseLeave,
+        clientID, parentID, readonly, onPointerLeave,
     } = props;
 
     const dispatch = useDispatch();
@@ -50,8 +50,8 @@ function ObjectItemElementComponent(props: OwnProps): JSX.Element {
     return (
         <div
             id={`cvat-objects-sidebar-state-item-element-${element.clientID}`}
-            onMouseEnter={activate}
-            onMouseLeave={onMouseLeave}
+            onPointerEnter={activate}
+            onPointerLeave={onPointerLeave}
             key={clientID}
             className={elementClassName}
             style={{ '--state-item-background': `${elementColor}` } as React.CSSProperties}

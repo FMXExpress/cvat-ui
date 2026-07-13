@@ -13,10 +13,13 @@ export default function useDraggable(
     const ref = useRef<HTMLDivElement>(null);
     useEffect(() => {
         if (!ref.current) return () => {};
+        const element = ref.current;
         const click = [0, 0];
         const position = getPosition();
+        let activePointerID: number | null = null;
 
-        const mouseMoveListener = (event: MouseEvent): void => {
+        const pointerMoveListener = (event: PointerEvent): void => {
+            if (activePointerID === null || event.pointerId !== activePointerID) return;
             const dy = event.clientY - click[0];
             const dx = event.clientX - click[1];
             onDrag(position[0] + dy, position[1] + dx);
@@ -24,34 +27,44 @@ export default function useDraggable(
             event.preventDefault();
         };
 
-        const mouseDownListener = (event: MouseEvent): void => {
+        const pointerUpListener = (event: PointerEvent): void => {
+            if (event.pointerId !== activePointerID) return;
+            activePointerID = null;
+            if (element.hasPointerCapture(event.pointerId)) {
+                element.releasePointerCapture(event.pointerId);
+            }
+        };
+
+        const pointerDownListener = (event: PointerEvent): void => {
+            if (activePointerID !== null || !event.isPrimary) return;
             const [initialTop, initialLeft] = getPosition();
             position[0] = initialTop;
             position[1] = initialLeft;
             click[0] = event.clientY;
             click[1] = event.clientX;
-            window.addEventListener('mousemove', mouseMoveListener);
+            activePointerID = event.pointerId;
+            // capture keeps receiving pointermove/up even when the pointer
+            // leaves the element or the window
+            element.setPointerCapture(event.pointerId);
             event.stopPropagation();
             event.preventDefault();
         };
 
-        const mouseUpListener = (): void => {
-            window.removeEventListener('mousemove', mouseMoveListener);
-        };
-
-        window.document.addEventListener('mouseup', mouseUpListener);
-        ref.current.addEventListener('mousedown', mouseDownListener);
+        element.addEventListener('pointerdown', pointerDownListener);
+        element.addEventListener('pointermove', pointerMoveListener);
+        element.addEventListener('pointerup', pointerUpListener);
+        element.addEventListener('pointercancel', pointerUpListener);
 
         return () => {
-            window.document.removeEventListener('mouseup', mouseUpListener);
-            if (ref.current) {
-                ref.current.removeEventListener('mousedown', mouseDownListener);
-            }
+            element.removeEventListener('pointerdown', pointerDownListener);
+            element.removeEventListener('pointermove', pointerMoveListener);
+            element.removeEventListener('pointerup', pointerUpListener);
+            element.removeEventListener('pointercancel', pointerUpListener);
         };
     }, [ref.current]);
 
     return (
-        <div ref={ref}>
+        <div ref={ref} style={{ touchAction: 'none' }}>
             {component}
         </div>
     );

@@ -565,3 +565,9 @@ export function toReversed<T>(array: Array<T>): Array<T> {
 
 export type Segment = [[number, number], [number, number]];
 export type PropType<T, Prop extends keyof T> = T[Prop];
+
+export function isInteractionPointer(event: MouseEvent): boolean {
+    // fingers pan/pinch the canvas (see pointerRouter.ts), they never draw or
+    // edit; mouse and pen (and synthetic MouseEvents) interact as usual
+    return !(window.PointerEvent && event instanceof PointerEvent) || event.pointerType !== 'touch';
+}

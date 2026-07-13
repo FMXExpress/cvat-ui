@@ -8,6 +8,7 @@ import consts from './consts';
 import Crosshair from './crosshair';
 import {
     translateToSVG, PropType, stringifyPoints, translateToCanvas, expandChannels, imageDataToDataURL,
+    isInteractionPointer,
 } from './shared';
 
 import {
@@ -96,6 +97,7 @@ export class InteractionHandlerImpl implements InteractionHandler {
 
     private interactPoints(): void {
         const eventListener = (e: MouseEvent): void => {
+            if (!isInteractionPointer(e)) return;
             if ((e.button === 0 || (e.button === 2 && this.interactionData.minNegVertices >= 0)) && !e.altKey) {
                 e.preventDefault();
                 const [cx, cy] = translateToSVG((this.canvas.node as any) as SVGSVGElement, [e.clientX, e.clientY]);
@@ -118,7 +120,7 @@ export class InteractionHandlerImpl implements InteractionHandler {
                 }
 
                 const self = this.currentInteractionShape;
-                self.on('mouseenter', (): void => {
+                self.on('pointerenter', (): void => {
                     if (this.interactionData.allowRemoveOnlyLast) {
                         if (this.interactionShapes.indexOf(self) !== this.interactionShapes.length - 1) {
                             return;
@@ -131,7 +133,7 @@ export class InteractionHandlerImpl implements InteractionHandler {
                         r: (this.controlPointsSize * 1.5) / this.geometry.scale,
                     });
 
-                    self.on('mousedown', (_e: MouseEvent): void => {
+                    self.on('pointerdown', (_e: MouseEvent): void => {
                         _e.preventDefault();
                         _e.stopPropagation();
                         self.remove();
@@ -149,25 +151,26 @@ export class InteractionHandlerImpl implements InteractionHandler {
                     });
                 });
 
-                self.on('mouseleave', (): void => {
+                self.on('pointerleave', (): void => {
                     self.removeClass('cvat_canvas_removable_interaction_point');
                     self.attr({
                         'stroke-width': consts.POINTS_STROKE_WIDTH / this.geometry.scale,
                         r: this.controlPointsSize / this.geometry.scale,
                     });
 
-                    self.off('mousedown');
+                    self.off('pointerdown');
                 });
             }
         };
 
         // clear this listener in release()
-        this.canvas.on('mousedown.interaction', eventListener);
+        this.canvas.on('pointerdown.interaction', eventListener);
     }
 
     private interactRectangle(shouldFinish: boolean, onContinue?: () => void): void {
         let initialized = false;
         const eventListener = (e: MouseEvent): void => {
+            if (!isInteractionPointer(e)) return;
             if (e.button === 0 && !e.altKey) {
                 if (!initialized) {
                     (this.currentInteractionShape as any).draw(e, { snapToGrid: 0.1 });
@@ -179,14 +182,14 @@ export class InteractionHandlerImpl implements InteractionHandler {
         };
 
         this.currentInteractionShape = this.canvas.rect();
-        this.canvas.on('mousedown.interaction', eventListener);
+        this.canvas.on('pointerdown.interaction', eventListener);
         this.currentInteractionShape
             .on('drawstop', (): void => {
                 if (this.cancelled) {
                     return;
                 }
 
-                this.canvas.off('mousedown.interaction', eventListener);
+                this.canvas.off('pointerdown.interaction', eventListener);
                 this.interactionShapes.push(this.currentInteractionShape);
                 this.shapesWereUpdated = true;
 
@@ -244,7 +247,7 @@ export class InteractionHandlerImpl implements InteractionHandler {
             this.removeCrosshair();
         }
 
-        this.canvas.off('mousedown.interaction');
+        this.canvas.off('pointerdown.interaction');
         this.interactionShapes.forEach((shape: SVG.Shape): SVG.Shape => shape.remove());
         this.interactionShapes = [];
         if (this.currentInteractionShape) {
@@ -368,7 +371,8 @@ export class InteractionHandlerImpl implements InteractionHandler {
             y: 0,
         };
 
-        this.canvas.on('mousemove.interaction', (e: MouseEvent): void => {
+        this.canvas.on('pointermove.interaction', (e: MouseEvent): void => {
+            if (!isInteractionPointer(e)) return;
             const [x, y] = translateToSVG((this.canvas.node as any) as SVGSVGElement, [e.clientX, e.clientY]);
             this.cursorPosition = { x, y };
             if (this.crosshair) {

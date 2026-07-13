@@ -3,7 +3,9 @@
 // SPDX-License-Identifier: MIT
 
 import * as SVG from 'svg.js';
-import { expandChannels, imageDataToDataURL, translateToSVG } from './shared';
+import {
+    expandChannels, imageDataToDataURL, translateToSVG, isInteractionPointer,
+} from './shared';
 import { Geometry } from './canvasModel';
 import consts from './consts';
 
@@ -92,6 +94,7 @@ export class ObjectSelectorImpl implements ObjectSelector {
     }
 
     private onMouseDown = (event: MouseEvent): void => {
+        if (!isInteractionPointer(event)) return;
         const point = translateToSVG((this.canvas.node as any) as SVGSVGElement, [event.clientX, event.clientY]);
         this.mouseDownPosition = { x: point[0], y: point[1] };
         this.selectionRect = this.canvas.rect().addClass('cvat_canvas_selection_box');
@@ -150,11 +153,19 @@ export class ObjectSelectorImpl implements ObjectSelector {
         }
     };
 
+    private onPointerCancel = (): void => {
+        if (this.selectionRect) {
+            this.selectionRect.remove();
+            this.selectionRect = null;
+        }
+    };
+
     public enable(callback: (selected: ObjectState[]) => void, filter?: SelectionFilter): void {
         if (!this.isEnabled) {
-            window.document.addEventListener('mouseup', this.onMouseUp);
-            this.canvas.node.addEventListener('mousedown', this.onMouseDown);
-            this.canvas.node.addEventListener('mousemove', this.onMouseMove);
+            window.document.addEventListener('pointerup', this.onMouseUp);
+            window.document.addEventListener('pointercancel', this.onPointerCancel);
+            this.canvas.node.addEventListener('pointerdown', this.onMouseDown);
+            this.canvas.node.addEventListener('pointermove', this.onMouseMove);
             this.canvas.node.addEventListener('click', this.findObjectOnClick);
 
             this.selectedObjects = {};
@@ -229,9 +240,10 @@ export class ObjectSelectorImpl implements ObjectSelector {
     }
 
     public disable(): void {
-        window.document.removeEventListener('mouseup', this.onMouseUp);
-        this.canvas.node.removeEventListener('mousedown', this.onMouseDown);
-        this.canvas.node.removeEventListener('mousemove', this.onMouseMove);
+        window.document.removeEventListener('pointerup', this.onMouseUp);
+        window.document.removeEventListener('pointercancel', this.onPointerCancel);
+        this.canvas.node.removeEventListener('pointerdown', this.onMouseDown);
+        this.canvas.node.removeEventListener('pointermove', this.onMouseMove);
         this.canvas.node.removeEventListener('click', this.findObjectOnClick);
 
         if (this.selectionRect) {

@@ -5,6 +5,7 @@
 import React from 'react';
 import { omit } from 'lodash';
 import Menu, { MenuProps } from 'antd/lib/menu';
+import { dispatchDismissEvents } from 'utils/pointer-events';
 // eslint-disable-next-line import/no-extraneous-dependencies
 import { MenuInfo as MenuInfoType } from 'rc-menu/lib/interface';
 
@@ -17,7 +18,7 @@ export default function DropdownMenu(props: MenuProps): JSX.Element {
         <Menu
             onClick={(info: MenuInfoType) => {
                 // close menu
-                window.document.body.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+                dispatchDismissEvents(window.document.body);
 
                 if (onClick) {
                     onClick(info);
