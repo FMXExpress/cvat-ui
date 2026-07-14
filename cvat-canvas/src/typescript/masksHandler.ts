@@ -27,6 +27,7 @@ export interface MasksHandler {
     configure(configuration: Configuration): void;
     transform(geometry: Geometry): void;
     cancel(): void;
+    destroy(): void;
     enabled: boolean;
 }
 
@@ -386,16 +387,11 @@ export class MasksHandlerImpl implements MasksHandler {
 
         this.canvas.getElement().parentElement.addEventListener('contextmenu', (e: MouseEvent) => e.preventDefault());
         this.latestMousePos = { x: -1, y: -1 };
-        window.document.addEventListener('pointerup', () => {
-            this.isMouseDown = false;
-            this.isBrushSizeChanging = false;
-        });
-        window.document.addEventListener('pointercancel', () => {
-            this.isMouseDown = false;
-            this.isBrushSizeChanging = false;
-        });
+        window.document.addEventListener('pointerup', this.onPointerRelease);
+        window.document.addEventListener('pointercancel', this.onPointerRelease);
 
         this.canvas.on('mouse:down', (options: fabric.IEvent<MouseEvent>) => {
+            if (MasksHandlerImpl.isTouchInput(options.e)) return;
             const { isDrawing, isEditing, isInsertion } = this;
             this.isMouseDown = (isDrawing || isEditing) && options.e.button === 0 && !options.e.altKey;
             this.isBrushSizeChanging = (isDrawing || isEditing) && options.e.button === 2 && options.e.altKey;
@@ -426,6 +422,17 @@ export class MasksHandlerImpl implements MasksHandler {
         });
 
         this.canvas.on('mouse:move', (e: fabric.IEvent<MouseEvent>) => {
+            if (MasksHandlerImpl.isTouchInput(e.e)) return;
+            if (e.e instanceof MouseEvent && typeof e.e.buttons === 'number') {
+                // chorded buttons release the dragging button without any
+                // pointerup/mouseup, only a buttons transition on move
+                if (this.isMouseDown && (e.e.buttons & 1) === 0) {
+                    this.isMouseDown = false;
+                }
+                if (this.isBrushSizeChanging && (e.e.buttons & 2) === 0) {
+                    this.isBrushSizeChanging = false;
+                }
+            }
             const { image: { width: imageWidth, height: imageHeight } } = this.geometry;
             const { angle } = this.geometry;
             let [x, y] = [e.pointer.x, e.pointer.y];
@@ -584,6 +591,23 @@ export class MasksHandlerImpl implements MasksHandler {
             this.drawablePolygon.set('strokeWidth', consts.BASE_STROKE_WIDTH / scale);
             this.canvas.renderAll();
         }
+    }
+
+    private static isTouchInput(event: Event): boolean {
+        // fabric binds its own native touch handlers; fingers pan/pinch the
+        // canvas (see pointerRouter.ts), they do not paint or insert masks
+        return (window.TouchEvent && event instanceof TouchEvent) ||
+            (window.PointerEvent && event instanceof PointerEvent && event.pointerType === 'touch');
+    }
+
+    private onPointerRelease = (): void => {
+        this.isMouseDown = false;
+        this.isBrushSizeChanging = false;
+    };
+
+    public destroy(): void {
+        window.document.removeEventListener('pointerup', this.onPointerRelease);
+        window.document.removeEventListener('pointercancel', this.onPointerRelease);
     }
 
     public draw(drawData: DrawData): void {

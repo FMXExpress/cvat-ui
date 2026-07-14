@@ -13,6 +13,7 @@ import { CombinedState, SelectedResourceType } from 'reducers';
 import GlobalHotKeys, { KeyMap } from 'utils/mousetrap-react';
 import { ShortcutScope } from 'utils/enums';
 import { platformInfoV2 } from 'utils/platform-checker';
+import { addDismissListener } from 'utils/pointer-events';
 
 export interface BulkSelectProps {
     selected: boolean;
@@ -108,7 +109,7 @@ function BulkWrapper(props: Readonly<BulkWrapperProps>): JSX.Element {
     }, [isShiftSelecting]);
 
     useEffect(() => {
-        function handleClickOutside(event: MouseEvent): void {
+        function handleClickOutside(event: Event): void {
             const target = event.target as HTMLElement;
 
             const keepClasses = [
@@ -139,10 +140,7 @@ function BulkWrapper(props: Readonly<BulkWrapperProps>): JSX.Element {
                 lastSelectedIndexRef.current = null;
             }
         }
-        document.addEventListener('pointerdown', handleClickOutside);
-        return () => {
-            document.removeEventListener('pointerdown', handleClickOutside);
-        };
+        return addDismissListener(handleClickOutside, document);
     }, [dispatch]);
 
     const { parentToChildrenMap = {} } = props;

@@ -122,7 +122,16 @@ import * as SVG from 'svg.js';
     }
 
     // add drag and end events to window
-    SVG.on(window, 'pointermove.drag', function(e){ if(_this.ownsEvent(e) && e.pointerType !== 'touch') _this.drag(e) })
+    SVG.on(window, 'pointermove.drag', function(e){
+      if(!_this.ownsEvent(e) || e.pointerType === 'touch') return
+      // chorded buttons: releasing the dragging button while another is held
+      // fires no pointerup, only a buttons transition on pointermove
+      if(e.pointerType === 'mouse' && e.isTrusted && (e.buttons & 1) === 0){
+        _this.end(e)
+      } else {
+        _this.drag(e)
+      }
+    })
     SVG.on(window, 'pointerup.drag', function(e){ if(_this.ownsEvent(e)) _this.end(e) })
     SVG.on(window, 'pointercancel.drag', function(e){ if(_this.ownsEvent(e)) _this.end(e) })
 

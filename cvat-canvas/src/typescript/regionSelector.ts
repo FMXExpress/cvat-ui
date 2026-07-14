@@ -41,6 +41,7 @@ export class RegionSelectorImpl implements RegionSelector {
     }
 
     private onMouseMove = (event: MouseEvent): void => {
+        if (!isInteractionPointer(event)) return;
         if (this.selectionRect) {
             const box = this.getSelectionBox(event);
 
@@ -78,7 +79,8 @@ export class RegionSelectorImpl implements RegionSelector {
         }
     };
 
-    private onMouseUp = (): void => {
+    private onMouseUp = (event: MouseEvent): void => {
+        if (!isInteractionPointer(event)) return;
         const { offset } = this.geometry;
         if (this.selectionRect) {
             const {
