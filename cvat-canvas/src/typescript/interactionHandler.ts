@@ -134,6 +134,7 @@ export class InteractionHandlerImpl implements InteractionHandler {
                     });
 
                     self.on('pointerdown', (_e: MouseEvent): void => {
+                        if (!isInteractionPointer(_e)) return;
                         _e.preventDefault();
                         _e.stopPropagation();
                         self.remove();

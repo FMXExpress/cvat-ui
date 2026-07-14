@@ -74,6 +74,7 @@ export class ZoomHandlerImpl implements ZoomHandler {
     }
 
     private onSelectUpdate(event: PointerEvent): void {
+        if (!isInteractionPointer(event)) return;
         if (this.selectionRect) {
             this.selectionRect.attr({
                 ...this.getSelectionBox(event),
@@ -82,6 +83,7 @@ export class ZoomHandlerImpl implements ZoomHandler {
     }
 
     private onSelectStop(event: PointerEvent): void {
+        if (!isInteractionPointer(event)) return;
         if (this.selectionRect) {
             const box = this.getSelectionBox(event);
             this.selectionRect.remove();

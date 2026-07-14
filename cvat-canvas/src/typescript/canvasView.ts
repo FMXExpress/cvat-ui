@@ -93,6 +93,9 @@ export class CanvasViewImpl implements CanvasView, Listener {
     private ctrlPressed: boolean;
     private pointerRouter: PointerGestureRouter;
     private lastDoubleTapTimestamp: number;
+    // buttons bitmask of the mouse button that started the current pan
+    // (1 = left, 4 = middle), consulted to end the pan on chorded release
+    private mousePanButtonMask: number;
     private innerObjectsFlags: {
         drawHidden: Record<number, boolean>;
         editHidden: Record<number, boolean>;
@@ -1517,10 +1520,14 @@ export class CanvasViewImpl implements CanvasView, Listener {
     };
 
     private onPointerUp = (event: PointerEvent): void => {
-        this.pointerRouter.pointerUp(event);
         if (event.button === 0 || event.button === 1 || event.type === 'pointercancel') {
             this.controller.disableDrag();
         }
+
+        // must run after disableDrag(): when a pinch ends with one finger
+        // remaining, the router hands that finger over to a new pan
+        // (enableDrag) which would otherwise be cancelled immediately
+        this.pointerRouter.pointerUp(event);
     };
 
     public constructor(model: CanvasModel & Master, controller: CanvasController) {
@@ -1543,6 +1550,7 @@ export class CanvasViewImpl implements CanvasView, Listener {
         this.snapToAngleResize = consts.SNAP_TO_ANGLE_RESIZE_DEFAULT;
         this.ctrlPressed = false;
         this.lastDoubleTapTimestamp = 0;
+        this.mousePanButtonMask = 0b101;
         this.innerObjectsFlags = {
             drawHidden: {},
             editHidden: {},
@@ -1724,7 +1732,15 @@ export class CanvasViewImpl implements CanvasView, Listener {
 
         this.pointerRouter = new PointerGestureRouter({
             onPanStart: (clientX: number, clientY: number): void => {
-                this.controller.enableDrag(clientX, clientY);
+                // fingers pan the frame in the same modes where the left
+                // mouse button pans it, never during drawing/editing
+                // (e.g. the fabric masks canvas handles its own input there)
+                if ([Mode.IDLE, Mode.DRAG_CANVAS, Mode.MERGE, Mode.SPLIT].includes(this.mode)) {
+                    this.controller.enableDrag(clientX, clientY);
+                }
+            },
+            onPanMove: (clientX: number, clientY: number): void => {
+                this.controller.drag(clientX, clientY);
             },
             onPanEnd: (): void => {
                 this.controller.disableDrag();
@@ -1752,13 +1768,24 @@ export class CanvasViewImpl implements CanvasView, Listener {
             longPressAllowed: (): boolean => this.mode === Mode.IDLE,
         });
 
+        // capture phase: the router sees every pointerdown before any shape
+        // handler or SVG.js plugin can stopPropagation() it (pen tracking for
+        // palm rejection stays correct), and events it claims (all touch:
+        // pan/pinch/rejected palm) are stopped here so no descendant listener
+        // ever receives them
         this.canvas.addEventListener('pointerdown', (event: PointerEvent): void => {
-            if (!this.pointerRouter.pointerDown(event)) return;
+            if (!this.pointerRouter.pointerDown(event)) {
+                event.stopPropagation();
+            }
+        }, { capture: true });
+
+        this.canvas.addEventListener('pointerdown', (event: PointerEvent): void => {
             if ([0, 1].includes(event.button)) {
                 if (
                     [Mode.IDLE, Mode.DRAG_CANVAS, Mode.MERGE, Mode.SPLIT]
                         .includes(this.mode) || event.button === 1 || event.altKey
                 ) {
+                    this.mousePanButtonMask = event.button === 1 ? 0b100 : 0b001;
                     this.controller.enableDrag(event.clientX, event.clientY);
                 }
             }
@@ -1810,9 +1837,28 @@ export class CanvasViewImpl implements CanvasView, Listener {
             event.preventDefault();
         });
 
+        // capture phase: touch moves (pan/pinch, handled inside the router via
+        // callbacks) are consumed here and never reach descendant listeners,
+        // and never generate hover events like canvas.moved below
         this.canvas.addEventListener('pointermove', (e: PointerEvent): void => {
-            if (!this.pointerRouter.pointerMove(e)) return;
-            this.controller.drag(e.clientX, e.clientY);
+            if (!this.pointerRouter.pointerMove(e)) {
+                e.stopPropagation();
+            }
+        }, { capture: true });
+
+        this.canvas.addEventListener('pointermove', (e: PointerEvent): void => {
+            if (e.pointerType === 'mouse' && e.isTrusted && (e.buttons & this.mousePanButtonMask) === 0) {
+                // chorded buttons: releasing the button that started the pan
+                // while another is still held produces no pointerup, only a
+                // buttons change
+                if (!this.pointerRouter.panIsActive) {
+                    this.controller.disableDrag();
+                }
+            }
+
+            if (!this.pointerRouter.panIsActive) {
+                this.controller.drag(e.clientX, e.clientY);
+            }
 
             if (this.mode !== Mode.IDLE) return;
             if (e.ctrlKey || e.altKey) return;
@@ -2281,6 +2327,7 @@ export class CanvasViewImpl implements CanvasView, Listener {
             window.document.removeEventListener('pointerup', this.onPointerUp);
             window.document.removeEventListener('pointercancel', this.onPointerUp);
             this.interactionHandler.destroy();
+            this.masksHandler.destroy();
         }
 
         if (model.imageBitmap && [UpdateReasons.OBJECTS_UPDATED].includes(reason)) {

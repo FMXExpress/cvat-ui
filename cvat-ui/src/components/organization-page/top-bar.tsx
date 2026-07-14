@@ -39,6 +39,7 @@ import {
     ResourceSelectionInfo,
 } from 'components/resource-sorting-filtering';
 
+import { addDismissListener } from 'utils/pointer-events';
 import InvitationModal from './invitation-modal';
 
 import {
@@ -93,17 +94,14 @@ function OrganizationTopBar(props: Readonly<Props>): JSX.Element {
     }, []);
 
     useEffect(() => {
-        const listener = (event: MouseEvent): void => {
+        const listener = (event: Event): void => {
             const divElement = descriptionEditingRef.current;
             if (editingDescription && divElement && !event.composedPath().includes(divElement)) {
                 setEditingDescription(false);
             }
         };
 
-        window.addEventListener('pointerdown', listener);
-        return () => {
-            window.removeEventListener('pointerdown', listener);
-        };
+        return addDismissListener(listener, window);
     });
 
     const onRemove = (): void => {

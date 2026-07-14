@@ -5,6 +5,7 @@
 export interface PointerRouterCallbacks {
     // single-finger pan
     onPanStart(clientX: number, clientY: number): void;
+    onPanMove(clientX: number, clientY: number): void;
     onPanEnd(): void;
     // two-finger pinch; factor > 1 means zoom in, centered at (clientX, clientY)
     onPinch(clientX: number, clientY: number, factor: number): void;
@@ -19,8 +20,6 @@ interface TrackedPointer {
     pointerType: string;
     clientX: number;
     clientY: number;
-    target: EventTarget | null;
-    isPrimary: boolean;
 }
 
 const LONG_PRESS_MS = 650;
@@ -36,6 +35,13 @@ const PALM_REJECTION_MS = 500;
 //   touch while a pen is (recently) active -> ignored (palm rejection)
 // It also synthesizes contextmenu on long-press and reports double taps
 // for touch/pen input.
+//
+// The router must observe events in the CAPTURE phase on the canvas wrapper:
+// pointerDown()/pointerMove() return false for every touch pointer (the
+// router owns all finger gestures), and the caller is expected to
+// stopPropagation() such events so no descendant listener (shape handlers,
+// SVG.js plugins, selectors) ever sees them. Mouse and pen return true and
+// propagate as usual.
 export class PointerGestureRouter {
     private callbacks: PointerRouterCallbacks;
     private pointers: Map<number, TrackedPointer> = new Map();
@@ -107,7 +113,8 @@ export class PointerGestureRouter {
     }
 
     // returns true when the event should be handled by regular
-    // (mouse-oriented) interaction code
+    // (mouse-oriented) interaction code; false when the router owns it and
+    // the caller should stopPropagation()
     public pointerDown(event: PointerEvent): boolean {
         if (event.pointerType === 'pen') {
             this.penDown = true;
@@ -124,8 +131,6 @@ export class PointerGestureRouter {
                 pointerType: event.pointerType,
                 clientX: event.clientX,
                 clientY: event.clientY,
-                target: event.target,
-                isPrimary: event.isPrimary,
             });
 
             const touches = this.touchPointers;
@@ -146,8 +151,6 @@ export class PointerGestureRouter {
             pointerType: event.pointerType,
             clientX: event.clientX,
             clientY: event.clientY,
-            target: event.target,
-            isPrimary: event.isPrimary,
         });
 
         if (event.pointerType === 'pen') {
@@ -172,7 +175,8 @@ export class PointerGestureRouter {
     }
 
     // returns true when the event should be handled by regular
-    // (mouse-oriented) interaction code
+    // (mouse-oriented) interaction code; false when the router owns it and
+    // the caller should stopPropagation()
     public pointerMove(event: PointerEvent): boolean {
         if (event.pointerType === 'pen') {
             this.lastPenEventTimestamp = performance.now();
@@ -187,20 +191,18 @@ export class PointerGestureRouter {
             }
         }
 
-        const tracked = this.pointers.get(event.pointerId);
-        if (tracked) {
-            tracked.clientX = event.clientX;
-            tracked.clientY = event.clientY;
-        }
-
         if (event.pointerType !== 'touch') {
             return true;
         }
 
+        const tracked = this.pointers.get(event.pointerId);
         if (!tracked) {
             // rejected palm touch
             return false;
         }
+
+        tracked.clientX = event.clientX;
+        tracked.clientY = event.clientY;
 
         if (this.pinchDistance !== null) {
             const touches = this.touchPointers;
@@ -214,11 +216,11 @@ export class PointerGestureRouter {
                 }
                 this.pinchDistance = distance;
             }
-            return false;
+        } else if (this.panPointerID === event.pointerId) {
+            this.callbacks.onPanMove(event.clientX, event.clientY);
         }
 
-        // single-finger pan: the caller feeds coordinates to the drag logic
-        return this.panPointerID === event.pointerId;
+        return false;
     }
 
     public pointerUp(event: PointerEvent): void {
@@ -252,7 +254,7 @@ export class PointerGestureRouter {
         }
     }
 
-    public get penIsActive(): boolean {
-        return this.penDown;
+    public get panIsActive(): boolean {
+        return this.panPointerID !== null;
     }
 }

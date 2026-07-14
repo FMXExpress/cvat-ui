@@ -103,6 +103,7 @@ export class ObjectSelectorImpl implements ObjectSelector {
     };
 
     private onMouseUp = (event: MouseEvent): void => {
+        if (!isInteractionPointer(event)) return;
         if (this.selectionRect) {
             this.selectionRect.remove();
             this.selectionRect = null;
@@ -142,6 +143,7 @@ export class ObjectSelectorImpl implements ObjectSelector {
     };
 
     private onMouseMove = (event: MouseEvent): void => {
+        if (!isInteractionPointer(event)) return;
         if (this.selectionRect) {
             const box = this.getSelectionBox(event);
             this.selectionRect.attr({

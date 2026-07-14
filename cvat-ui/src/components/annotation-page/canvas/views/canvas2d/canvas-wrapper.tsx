@@ -761,6 +761,10 @@ class CanvasWrapperComponent extends React.PureComponent<Props> {
     private onCanvasPointerDown = (e: PointerEvent): void => {
         const { workspace, activatedStateID, onActivateObject } = this.props;
 
+        // fingers pan/pinch the canvas, starting such a gesture over the
+        // background must not deactivate the current object
+        if (e.pointerType === 'touch') return;
+
         if ((e.target as HTMLElement).tagName === 'svg' && e.button !== 2) {
             if (activatedStateID !== null && workspace !== Workspace.ATTRIBUTES) {
                 onActivateObject(null, null);
