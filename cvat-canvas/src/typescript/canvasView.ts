@@ -93,6 +93,9 @@ export class CanvasViewImpl implements CanvasView, Listener {
     private ctrlPressed: boolean;
     private pointerRouter: PointerGestureRouter;
     private lastDoubleTapTimestamp: number;
+    // buttons bitmask of the mouse button that started the current pan
+    // (1 = left, 4 = middle), consulted to end the pan on chorded release
+    private mousePanButtonMask: number;
     private innerObjectsFlags: {
         drawHidden: Record<number, boolean>;
         editHidden: Record<number, boolean>;
@@ -1547,6 +1550,7 @@ export class CanvasViewImpl implements CanvasView, Listener {
         this.snapToAngleResize = consts.SNAP_TO_ANGLE_RESIZE_DEFAULT;
         this.ctrlPressed = false;
         this.lastDoubleTapTimestamp = 0;
+        this.mousePanButtonMask = 0b101;
         this.innerObjectsFlags = {
             drawHidden: {},
             editHidden: {},
@@ -1781,6 +1785,7 @@ export class CanvasViewImpl implements CanvasView, Listener {
                     [Mode.IDLE, Mode.DRAG_CANVAS, Mode.MERGE, Mode.SPLIT]
                         .includes(this.mode) || event.button === 1 || event.altKey
                 ) {
+                    this.mousePanButtonMask = event.button === 1 ? 0b100 : 0b001;
                     this.controller.enableDrag(event.clientX, event.clientY);
                 }
             }
@@ -1842,9 +1847,10 @@ export class CanvasViewImpl implements CanvasView, Listener {
         }, { capture: true });
 
         this.canvas.addEventListener('pointermove', (e: PointerEvent): void => {
-            if (e.pointerType === 'mouse' && e.isTrusted && (e.buttons & 0b101) === 0) {
-                // chorded buttons: releasing the dragging button while another
-                // is still held produces no pointerup, only a buttons change
+            if (e.pointerType === 'mouse' && e.isTrusted && (e.buttons & this.mousePanButtonMask) === 0) {
+                // chorded buttons: releasing the button that started the pan
+                // while another is still held produces no pointerup, only a
+                // buttons change
                 if (!this.pointerRouter.panIsActive) {
                     this.controller.disableDrag();
                 }
