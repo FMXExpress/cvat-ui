@@ -7,9 +7,9 @@ import polylabel from 'polylabel';
 import { fabric } from 'fabric';
 import * as SVG from 'svg.js';
 
-import 'svg.draggable.js';
-import 'svg.resize.js';
-import 'svg.select.js';
+import '../js/svg.draggable.js';
+import '../js/svg.resize.js';
+import '../js/svg.select.js';
 
 import { CanvasController } from './canvasController';
 import { Listener, Master } from './master';
@@ -25,6 +25,7 @@ import { RegionSelector, RegionSelectorImpl } from './regionSelector';
 import { ZoomHandler, ZoomHandlerImpl } from './zoomHandler';
 import { InteractionHandler, InteractionHandlerImpl } from './interactionHandler';
 import { AutoborderHandler, AutoborderHandlerImpl } from './autoborderHandler';
+import { PointerGestureRouter } from './pointerRouter';
 import consts from './consts';
 import {
     translateToSVG, translateFromSVG, translateToCanvas, translateFromCanvas,
@@ -90,6 +91,8 @@ export class CanvasViewImpl implements CanvasView, Listener {
     private draggableShape: SVG.Shape | null;
     private resizableShape: SVG.Shape | null;
     private ctrlPressed: boolean;
+    private pointerRouter: PointerGestureRouter;
+    private lastDoubleTapTimestamp: number;
     private innerObjectsFlags: {
         drawHidden: Record<number, boolean>;
         editHidden: Record<number, boolean>;
@@ -1060,7 +1063,7 @@ export class CanvasViewImpl implements CanvasView, Listener {
                             'stroke-width': consts.POINTS_STROKE_WIDTH / getGeometry().scale,
                         });
 
-                    circle.on('mouseenter', (e: MouseEvent): void => {
+                    circle.on('pointerenter', (e: PointerEvent): void => {
                         const activeElement = getActiveElement();
                         if (activeElement !== null && (e.altKey || e.ctrlKey)) {
                             const [state] = getController().objects.filter(
@@ -1079,18 +1082,18 @@ export class CanvasViewImpl implements CanvasView, Listener {
                         });
 
                         circle.on('dblclick', dblClickHandler);
-                        circle.on('mousedown', mousedownHandler);
+                        circle.on('pointerdown', mousedownHandler);
                         circle.on('contextmenu', contextMenuHandler);
                         circle.addClass('cvat_canvas_selected_point');
                     });
 
-                    circle.on('mouseleave', (): void => {
+                    circle.on('pointerleave', (): void => {
                         circle.attr({
                             'stroke-width': consts.POINTS_STROKE_WIDTH / getGeometry().scale,
                         });
 
                         circle.off('dblclick', dblClickHandler);
-                        circle.off('mousedown', mousedownHandler);
+                        circle.off('pointerdown', mousedownHandler);
                         circle.off('contextmenu', contextMenuHandler);
                         circle.removeClass('cvat_canvas_selected_point');
                     });
@@ -1253,8 +1256,8 @@ export class CanvasViewImpl implements CanvasView, Listener {
                 this.draggableShape = null;
                 aborted = true;
                 // disable internal drag events of SVG.js
-                // call chain is (mouseup -> SVG.handler.end -> SVG.handler.drag -> dragend)
-                window.dispatchEvent(new MouseEvent('mouseup'));
+                // call chain is (pointerup -> SVG.handler.end -> SVG.handler.drag -> dragend)
+                window.dispatchEvent(new PointerEvent('pointerup'));
             });
         } else {
             shape.removeClass('cvat_canvas_shape_draggable');
@@ -1443,8 +1446,8 @@ export class CanvasViewImpl implements CanvasView, Listener {
                     aborted = true;
                     this.resizableShape = null;
                     // disable internal resize events of SVG.js
-                    // call chain is (mouseup -> SVG.handler.end -> SVG.handler.resize-> resizeend)
-                    window.dispatchEvent(new MouseEvent('mouseup'));
+                    // call chain is (pointerup -> SVG.handler.end -> SVG.handler.resize-> resizeend)
+                    window.dispatchEvent(new PointerEvent('pointerup'));
                 });
         } else {
             if (this.resizableShape === shape) {
@@ -1513,8 +1516,9 @@ export class CanvasViewImpl implements CanvasView, Listener {
         }
     };
 
-    private onMouseUp = (event: MouseEvent): void => {
-        if (event.button === 0 || event.button === 1) {
+    private onPointerUp = (event: PointerEvent): void => {
+        this.pointerRouter.pointerUp(event);
+        if (event.button === 0 || event.button === 1 || event.type === 'pointercancel') {
             this.controller.disableDrag();
         }
     };
@@ -1538,6 +1542,7 @@ export class CanvasViewImpl implements CanvasView, Listener {
         this.mode = Mode.IDLE;
         this.snapToAngleResize = consts.SNAP_TO_ANGLE_RESIZE_DEFAULT;
         this.ctrlPressed = false;
+        this.lastDoubleTapTimestamp = 0;
         this.innerObjectsFlags = {
             drawHidden: {},
             editHidden: {},
@@ -1699,17 +1704,56 @@ export class CanvasViewImpl implements CanvasView, Listener {
         );
 
         // Setup event handlers
-        this.canvas.addEventListener('dblclick', (e: MouseEvent): void => {
+        const fitOrFocus = (): void => {
             if (this.activeElement.clientID !== null) {
                 // -1 means auto padding based on the shape size
                 this.controller.focus(this.activeElement.clientID, -1);
             } else {
                 this.controller.fit();
             }
+        };
+
+        this.canvas.addEventListener('dblclick', (e: MouseEvent): void => {
+            // skip the native dblclick some browsers synthesize right after
+            // a double tap the router has already handled
+            if (performance.now() - this.lastDoubleTapTimestamp > 500) {
+                fitOrFocus();
+            }
             e.preventDefault();
         });
 
-        this.canvas.addEventListener('mousedown', (event): void => {
+        this.pointerRouter = new PointerGestureRouter({
+            onPanStart: (clientX: number, clientY: number): void => {
+                this.controller.enableDrag(clientX, clientY);
+            },
+            onPanEnd: (): void => {
+                this.controller.disableDrag();
+            },
+            onPinch: (clientX: number, clientY: number, factor: number): void => {
+                const { offset } = this.controller.geometry;
+                const point = translateToSVG(this.content, [clientX, clientY]);
+                // canvasModel.zoom() expects a wheel-like deltaY,
+                // its scale factor is (6/5) ** (-deltaY / 10)
+                const deltaY = (-10 * Math.log(factor)) / Math.log(6 / 5);
+                this.controller.zoom(point[0] - offset, point[1] - offset, deltaY);
+                this.canvas.dispatchEvent(
+                    new CustomEvent('canvas.zoom', {
+                        bubbles: false,
+                        cancelable: true,
+                    }),
+                );
+            },
+            onDoubleTap: (): void => {
+                if (this.mode === Mode.IDLE) {
+                    this.lastDoubleTapTimestamp = performance.now();
+                    fitOrFocus();
+                }
+            },
+            longPressAllowed: (): boolean => this.mode === Mode.IDLE,
+        });
+
+        this.canvas.addEventListener('pointerdown', (event: PointerEvent): void => {
+            if (!this.pointerRouter.pointerDown(event)) return;
             if ([0, 1].includes(event.button)) {
                 if (
                     [Mode.IDLE, Mode.DRAG_CANVAS, Mode.MERGE, Mode.SPLIT]
@@ -1720,13 +1764,22 @@ export class CanvasViewImpl implements CanvasView, Listener {
             }
         });
 
-        window.document.addEventListener('mouseup', this.onMouseUp);
+        window.document.addEventListener('pointerup', this.onPointerUp);
+        window.document.addEventListener('pointercancel', this.onPointerUp);
         window.document.addEventListener('keydown', this.onKeyDown);
         window.document.addEventListener('keyup', this.onKeyUp);
 
-        for (const eventName of ['wheel', 'mousedown', 'dblclick', 'contextmenu']) {
+        for (const eventName of ['wheel', 'pointerdown', 'mousedown', 'dblclick', 'contextmenu']) {
             this.attachmentBoard.addEventListener(eventName, (event) => {
                 event.stopPropagation();
+            });
+        }
+
+        // Safari implements pinch on trackpads/touchscreens via proprietary
+        // gesture events; prevent them so the page itself never zooms
+        for (const eventName of ['gesturestart', 'gesturechange', 'gestureend']) {
+            this.canvas.addEventListener(eventName, (event: Event): void => {
+                event.preventDefault();
             });
         }
 
@@ -1757,7 +1810,8 @@ export class CanvasViewImpl implements CanvasView, Listener {
             event.preventDefault();
         });
 
-        this.canvas.addEventListener('mousemove', (e): void => {
+        this.canvas.addEventListener('pointermove', (e: PointerEvent): void => {
+            if (!this.pointerRouter.pointerMove(e)) return;
             this.controller.drag(e.clientX, e.clientY);
 
             if (this.mode !== Mode.IDLE) return;
@@ -2224,7 +2278,8 @@ export class CanvasViewImpl implements CanvasView, Listener {
 
             window.document.removeEventListener('keydown', this.onKeyDown);
             window.document.removeEventListener('keyup', this.onKeyUp);
-            window.document.removeEventListener('mouseup', this.onMouseUp);
+            window.document.removeEventListener('pointerup', this.onPointerUp);
+            window.document.removeEventListener('pointercancel', this.onPointerUp);
             this.interactionHandler.destroy();
         }
 
@@ -3493,15 +3548,15 @@ export class CanvasViewImpl implements CanvasView, Listener {
                     );
                 };
 
-                circle.on('mouseover', mouseover);
-                circle.on('mouseleave', mouseleave);
-                circle.on('mousemove', mousemove);
+                circle.on('pointerover', mouseover);
+                circle.on('pointerleave', mouseleave);
+                circle.on('pointermove', mousemove);
                 circle.on('click', click);
                 circle.on('remove', () => {
                     circle.off('remove');
-                    circle.off('mouseover', mouseover);
-                    circle.off('mouseleave', mouseleave);
-                    circle.off('mousemove', mousemove);
+                    circle.off('pointerover', mouseover);
+                    circle.off('pointerleave', mouseleave);
+                    circle.off('pointermove', mousemove);
                     circle.off('click', click);
                 });
 

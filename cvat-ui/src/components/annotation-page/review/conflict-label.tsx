@@ -46,10 +46,10 @@ export default function ConflictLabel(props: Props): ReactPortal {
                 className={`cvat-conflict-label ${conflictColor} ${darkenColor}`}
             >
                 <Icon
-                    onMouseEnter={() => {
+                    onPointerEnter={() => {
                         onEnter(conflict);
                     }}
-                    onMouseLeave={() => {
+                    onPointerLeave={() => {
                         onLeave(conflict);
                     }}
                     component={ConflictIcon}

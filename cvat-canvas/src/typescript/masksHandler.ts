@@ -386,7 +386,11 @@ export class MasksHandlerImpl implements MasksHandler {
 
         this.canvas.getElement().parentElement.addEventListener('contextmenu', (e: MouseEvent) => e.preventDefault());
         this.latestMousePos = { x: -1, y: -1 };
-        window.document.addEventListener('mouseup', () => {
+        window.document.addEventListener('pointerup', () => {
+            this.isMouseDown = false;
+            this.isBrushSizeChanging = false;
+        });
+        window.document.addEventListener('pointercancel', () => {
             this.isMouseDown = false;
             this.isBrushSizeChanging = false;
         });

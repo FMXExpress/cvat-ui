@@ -173,7 +173,9 @@ class CanvasContextMenuContainer extends React.PureComponent<Props, State> {
         const { canvasInstance } = this.props;
         this.updatePositionIfOutOfScreen();
 
-        window.addEventListener('mousemove', this.moveContextMenu);
+        window.addEventListener('pointermove', this.moveContextMenu);
+        window.addEventListener('pointerup', this.stopDragging);
+        window.addEventListener('pointercancel', this.stopDragging);
         if (canvasInstance) {
             canvasInstance.html().addEventListener('canvas.clicked', this.onClickCanvas);
             canvasInstance.html().addEventListener('contextmenu', this.onOpenCanvasContextMenu);
@@ -200,21 +202,22 @@ class CanvasContextMenuContainer extends React.PureComponent<Props, State> {
         if (element && (!this.initialized || this.initialized !== element)) {
             this.initialized = element as HTMLDivElement;
 
-            this.initialized.addEventListener('mousedown', (e: MouseEvent): any => {
+            this.initialized.addEventListener('pointerdown', (e: PointerEvent): any => {
                 this.dragging = true;
                 this.dragInitPosX = e.clientX;
                 this.dragInitPosY = e.clientY;
             });
 
-            this.initialized.addEventListener('mouseup', () => {
-                this.dragging = false;
-            });
+            this.initialized.addEventListener('pointerup', this.stopDragging);
+            this.initialized.addEventListener('pointercancel', this.stopDragging);
         }
     }
 
     public componentWillUnmount(): void {
         const { canvasInstance } = this.props;
-        window.removeEventListener('mousemove', this.moveContextMenu);
+        window.removeEventListener('pointermove', this.moveContextMenu);
+        window.removeEventListener('pointerup', this.stopDragging);
+        window.removeEventListener('pointercancel', this.stopDragging);
         if (canvasInstance) {
             canvasInstance.html().removeEventListener('canvas.clicked', this.onClickCanvas);
             canvasInstance.html().removeEventListener('contextmenu', this.onOpenCanvasContextMenu);
@@ -253,7 +256,11 @@ class CanvasContextMenuContainer extends React.PureComponent<Props, State> {
         }
     };
 
-    private moveContextMenu = (e: MouseEvent): void => {
+    private stopDragging = (): void => {
+        this.dragging = false;
+    };
+
+    private moveContextMenu = (e: PointerEvent): void => {
         if (this.dragging) {
             this.setState((state) => {
                 const value = {

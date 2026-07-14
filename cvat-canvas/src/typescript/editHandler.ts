@@ -4,10 +4,10 @@
 // SPDX-License-Identifier: MIT
 
 import * as SVG from 'svg.js';
-import 'svg.select.js';
+import '../js/svg.select.js';
 
 import consts from './consts';
-import { translateFromSVG, pointsToNumberArray } from './shared';
+import { translateFromSVG, pointsToNumberArray, isInteractionPointer } from './shared';
 import { PolyEditData, Geometry, Configuration } from './canvasModel';
 import { AutoborderHandler } from './autoborderHandler';
 
@@ -36,20 +36,20 @@ export class EditHandlerImpl implements EditHandler {
     private isEditing: boolean;
 
     private setupTrailingPoint(circle: SVG.Circle): void {
-        circle.on('mouseenter', (): void => {
+        circle.on('pointerenter', (): void => {
             circle.attr({
                 'stroke-width': consts.POINTS_SELECTED_STROKE_WIDTH / this.geometry.scale,
             });
         });
 
-        circle.on('mouseleave', (): void => {
+        circle.on('pointerleave', (): void => {
             circle.attr({
                 'stroke-width': consts.POINTS_STROKE_WIDTH / this.geometry.scale,
             });
         });
 
-        circle.on('mousedown', (e: MouseEvent): void => {
-            if (e.button !== 0) return;
+        circle.on('pointerdown', (e: MouseEvent): void => {
+            if (e.button !== 0 || !isInteractionPointer(e)) return;
             this.edit({ enabled: false });
         });
     }
@@ -80,7 +80,8 @@ export class EditHandlerImpl implements EditHandler {
             y: null,
         };
 
-        this.canvas.on('mousemove.edit', (e: MouseEvent): void => {
+        this.canvas.on('pointermove.edit', (e: MouseEvent): void => {
+            if (!isInteractionPointer(e)) return;
             if (e.shiftKey && ['polygon', 'polyline'].includes(this.editData.state.shapeType)) {
                 if (lastDrawnPoint.x === null || lastDrawnPoint.y === null) {
                     (this.editLine as any).draw('point', e);
@@ -134,7 +135,8 @@ export class EditHandlerImpl implements EditHandler {
     }
 
     private setupEditEvents(): void {
-        this.canvas.on('mousedown.edit', (e: MouseEvent): void => {
+        this.canvas.on('pointerdown.edit', (e: MouseEvent): void => {
+            if (!isInteractionPointer(e)) return;
             if (e.button === 0 && !e.altKey) {
                 (this.editLine as any).draw('point', e);
             } else if (e.button === 2 && this.editLine) {
@@ -244,8 +246,8 @@ export class EditHandlerImpl implements EditHandler {
         }
 
         // We do not need these events any more
-        this.canvas.off('mousedown.edit');
-        this.canvas.off('mousemove.edit');
+        this.canvas.off('pointerdown.edit');
+        this.canvas.off('pointermove.edit');
 
         (this.editLine as any).draw('stop');
         this.editLine.remove();
@@ -272,10 +274,10 @@ export class EditHandlerImpl implements EditHandler {
             for (const clone of this.clones) {
                 clone.on('click', (): void => this.selectPolygon(clone));
                 clone
-                    .on('mouseenter', (): void => {
+                    .on('pointerenter', (): void => {
                         clone.addClass('cvat_canvas_shape_splitting');
                     })
-                    .on('mouseleave', (): void => {
+                    .on('pointerleave', (): void => {
                         clone.removeClass('cvat_canvas_shape_splitting');
                     });
             }
@@ -302,7 +304,7 @@ export class EditHandlerImpl implements EditHandler {
                             'stroke-width': consts.POINTS_STROKE_WIDTH / getGeometry().scale,
                         });
 
-                    circle.node.addEventListener('mouseenter', (): void => {
+                    circle.node.addEventListener('pointerenter', (): void => {
                         circle.attr({
                             'stroke-width': consts.POINTS_SELECTED_STROKE_WIDTH / getGeometry().scale,
                         });
@@ -311,7 +313,7 @@ export class EditHandlerImpl implements EditHandler {
                         circle.addClass('cvat_canvas_selected_point');
                     });
 
-                    circle.node.addEventListener('mouseleave', (): void => {
+                    circle.node.addEventListener('pointerleave', (): void => {
                         circle.attr({
                             'stroke-width': consts.POINTS_STROKE_WIDTH / getGeometry().scale,
                         });
@@ -331,8 +333,8 @@ export class EditHandlerImpl implements EditHandler {
     }
 
     private release(): void {
-        this.canvas.off('mousedown.edit');
-        this.canvas.off('mousemove.edit');
+        this.canvas.off('pointerdown.edit');
+        this.canvas.off('pointermove.edit');
         this.autoborderHandler.autoborder(false);
         this.isEditing = false;
 

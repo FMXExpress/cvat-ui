@@ -3275,9 +3275,9 @@ __metadata:
   linkType: hard
 
 "@types/stats.js@npm:*":
-  version: 0.17.3
-  resolution: "@types/stats.js@npm:0.17.3"
-  checksum: 10c0/ccccc992c6dfe08fb85049aa3ce44ca7e428db8da4a3edd20298f1c8b72768021fa8bacdfbe8e9735a7552ee5d57f667c6f557050ad2d9a87b699b3566a6177a
+  version: 0.17.4
+  resolution: "@types/stats.js@npm:0.17.4"
+  checksum: 10c0/4fe0429998519f0476f03a25b4900b4d4a1474606478657271e40a884f7936ba902ea564b1c95cfd33a8e84af46cef6e1e98bb23e86fd3b6676cd5b974987151
   languageName: node
   linkType: hard
 
@@ -3336,9 +3336,9 @@ __metadata:
   linkType: hard
 
 "@types/webxr@npm:*":
-  version: 0.5.16
-  resolution: "@types/webxr@npm:0.5.16"
-  checksum: 10c0/7df4f693c58dc15a6749f37dcf0d29dc72c8e63dc8a7b8990120b2ab3492ad998e6c23a9d175b34a31ced36612b94658b1d6a25abf26d22c9ef35bdce512bcc9
+  version: 0.5.24
+  resolution: "@types/webxr@npm:0.5.24"
+  checksum: 10c0/ff59ffd390d06ca3f89ab2531d583ac10bc5e2ab82e5a01ecc40fbc365224a3375e7caa5b14649cf6141db21fb024940da7ad2bd8faa3cd497a6665257cb53b5
   languageName: node
   linkType: hard
 
@@ -5670,11 +5670,7 @@ __metadata:
   dependencies:
     "@types/polylabel": "npm:^1.0.5"
     polylabel: "npm:^1.1.0"
-    svg.draggable.js: "npm:2.2.2"
-    svg.draw.js: "npm:^2.0.4"
     svg.js: "npm:2.7.1"
-    svg.resize.js: "npm:1.4.3"
-    svg.select.js: "npm:3.0.1"
   languageName: unknown
   linkType: soft
 
@@ -16969,56 +16965,10 @@ __metadata:
   languageName: node
   linkType: hard
 
-"svg.draggable.js@npm:2.2.2":
-  version: 2.2.2
-  resolution: "svg.draggable.js@npm:2.2.2"
-  dependencies:
-    svg.js: "npm:^2.0.1"
-  checksum: 10c0/b21be608254cb10b56de2867883b11053caab477ffc0b5bc9aab7ae640293413c5ad68bd29c6eeed62e41f424576eb5e8b2ebc50056d7b05a060720446a34556
-  languageName: node
-  linkType: hard
-
-"svg.draw.js@npm:^2.0.4":
-  version: 2.0.4
-  resolution: "svg.draw.js@npm:2.0.4"
-  dependencies:
-    svg.js: "npm:2.x.x"
-  checksum: 10c0/1e1cac856f0754fd1c75a63dac95725527a502428cd14b549d592adc528d35f54fabffd54a0291e7a505b36c189399c62ff4d53934e912301c08c0e75df9f09b
-  languageName: node
-  linkType: hard
-
-"svg.js@npm:2.7.1, svg.js@npm:2.x.x, svg.js@npm:^2.0.1, svg.js@npm:^2.2.5, svg.js@npm:^2.6.5":
+"svg.js@npm:2.7.1":
   version: 2.7.1
   resolution: "svg.js@npm:2.7.1"
   checksum: 10c0/b50eecb4effdf9ad6be4ddbfd0fcf4e44bd1f6318b2dbbffe3fe639cbe556c9ac8253345f6c6e3734ba84b35472b975e359fb689c9795efb11be6cbba9d7bcfd
-  languageName: node
-  linkType: hard
-
-"svg.resize.js@npm:1.4.3":
-  version: 1.4.3
-  resolution: "svg.resize.js@npm:1.4.3"
-  dependencies:
-    svg.js: "npm:^2.6.5"
-    svg.select.js: "npm:^2.1.2"
-  checksum: 10c0/0ebdb3dd2e93cc14831e9e017c45d435ba0fdf26cd877411d2da7390a18035dd3754ffd5e1a18e50098da9ea5bb72dad49ba8f4993249bf29847efed72b0440a
-  languageName: node
-  linkType: hard
-
-"svg.select.js@npm:3.0.1":
-  version: 3.0.1
-  resolution: "svg.select.js@npm:3.0.1"
-  dependencies:
-    svg.js: "npm:^2.6.5"
-  checksum: 10c0/c629447aa77dccdc5091adef8d2ce146d6b75c0c0ece383e6dfc14911a7faca6177a091a554f4450c4e4d80c36e18b5fd8b2b15f9f85beec3a95a67c5e87c33f
-  languageName: node
-  linkType: hard
-
-"svg.select.js@npm:^2.1.2":
-  version: 2.1.2
-  resolution: "svg.select.js@npm:2.1.2"
-  dependencies:
-    svg.js: "npm:^2.2.5"
-  checksum: 10c0/6e7dfcca97ed85b5ba0018c192dbb0d08cee9943d532749f4323ca1bde0d6c797e028f0305c8da48385b41812254d6ef237f7dabd8a4c4d3a1a13e35af8e5db2
   languageName: node
   linkType: hard
 

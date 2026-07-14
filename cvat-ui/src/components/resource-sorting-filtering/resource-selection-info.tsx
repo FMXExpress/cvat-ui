@@ -41,6 +41,7 @@ export function ResourceSelectionInfo(
                 className='cvat-resource-deselect-button'
                 onClick={handleDeselectAll}
                 onMouseDown={(e) => e.stopPropagation()}
+                onPointerDown={(e) => e.stopPropagation()}
                 size='small'
                 type='link'
             >

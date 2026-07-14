@@ -4,10 +4,10 @@
 
 /* eslint-disable */
 import * as SVG from 'svg.js';
-import 'svg.draggable.js';
-import 'svg.resize.js';
-import 'svg.select.js';
-import 'svg.draw.js';
+import '../js/svg.draggable.js';
+import '../js/svg.resize.js';
+import '../js/svg.select.js';
+import '../js/svg.draw.js';
 
 import consts from './consts';
 import { Equation, CuboidModel, Orientation, Edge } from './cuboid';
@@ -922,14 +922,14 @@ function getTopDown(edgeIndex: EdgeIndex): number[] {
             edges.forEach((edge: SVG.Element) => {
                 edge.attr('stroke-width', width * (this.strokeOffset || consts.CUBOID_UNACTIVE_EDGE_STROKE_WIDTH));
             });
-            this.on('mouseover', () => {
+            this.on('pointerover', () => {
                 edges.forEach((edge: SVG.Element) => {
                     this.strokeOffset = this.node.classList.contains('cvat_canvas_shape_activated')
                         ? consts.CUBOID_ACTIVE_EDGE_STROKE_WIDTH
                         : consts.CUBOID_UNACTIVE_EDGE_STROKE_WIDTH;
                     edge.attr('stroke-width', width * this.strokeOffset);
                 });
-            }).on('mouseout', () => {
+            }).on('pointerout', () => {
                 edges.forEach((edge: SVG.Element) => {
                     this.strokeOffset = consts.CUBOID_UNACTIVE_EDGE_STROKE_WIDTH;
                     edge.attr('stroke-width', width * this.strokeOffset);

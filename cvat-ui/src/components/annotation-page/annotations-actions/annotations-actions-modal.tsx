@@ -31,6 +31,7 @@ import {
 import { Canvas } from 'cvat-canvas-wrapper';
 import { fetchAnnotationsAsync } from 'actions/annotation-actions';
 import { clamp } from 'utils/math';
+import { dispatchDismissEvents } from 'utils/pointer-events';
 
 const core = getCore();
 
@@ -639,7 +640,7 @@ export function openAnnotationsActionModal({
     defaultObjectState?: ObjectState,
     defaultAnnotationAction?: string,
 } = {}): void {
-    window.document.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+    dispatchDismissEvents(window.document);
 
     const div = window.document.createElement('div');
     window.document.body.append(div);

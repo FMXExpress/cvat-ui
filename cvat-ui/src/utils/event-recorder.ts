@@ -55,6 +55,10 @@ class EventRecorder {
                 obj_val: elementToRecord.innerText,
                 obj_name: this.filterClassName(elementToRecord.className),
                 location: window.location.pathname,
+                // in browsers following the modern UI Events specification click
+                // is a PointerEvent, pointerType tells mouse/pen/touch apart
+                ...(window.PointerEvent && event instanceof PointerEvent ?
+                    { pointer_type: event.pointerType } : {}),
             }, false);
         }
     }

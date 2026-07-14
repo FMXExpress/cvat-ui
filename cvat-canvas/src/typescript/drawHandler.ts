@@ -4,7 +4,7 @@
 // SPDX-License-Identifier: MIT
 
 import * as SVG from 'svg.js';
-import 'svg.draw.js';
+import '../js/svg.draw.js';
 import { CIRCLE_STROKE } from './svg.patch';
 
 import { AutoborderHandler } from './autoborderHandler';
@@ -23,6 +23,7 @@ import {
     makeSVGFromTemplate,
     setupSkeletonEdges,
     translateFromCanvas,
+    isInteractionPointer,
 } from './shared';
 import Crosshair from './crosshair';
 import consts from './consts';
@@ -379,8 +380,8 @@ export class DrawHandlerImpl implements DrawHandler {
 
         this.autoborderHandler.autoborder(false);
         this.initialized = false;
-        this.canvas.off('mousedown.draw');
-        this.canvas.off('mousemove.draw');
+        this.canvas.off('pointerdown.draw');
+        this.canvas.off('pointermove.draw');
 
         // Draw plugin in some cases isn't activated
         // For example when draw from initialState
@@ -479,7 +480,8 @@ export class DrawHandlerImpl implements DrawHandler {
             y: null,
         };
 
-        this.canvas.on('mousedown.draw', (e: MouseEvent): void => {
+        this.canvas.on('pointerdown.draw', (e: MouseEvent): void => {
+            if (!isInteractionPointer(e)) return;
             if (e.button === 0 && !e.altKey) {
                 if (initialPoint.x === null || initialPoint.y === null) {
                     const translated = translateToSVG(this.canvas.node as any as SVGSVGElement, [e.clientX, e.clientY]);
@@ -490,7 +492,8 @@ export class DrawHandlerImpl implements DrawHandler {
             }
         });
 
-        this.canvas.on('mousemove.draw', (e: MouseEvent): void => {
+        this.canvas.on('pointermove.draw', (e: MouseEvent): void => {
+            if (!isInteractionPointer(e)) return;
             if (initialPoint.x !== null && initialPoint.y !== null) {
                 const translated = translateToSVG(this.canvas.node as any as SVGSVGElement, [e.clientX, e.clientY]);
                 const rx = Math.abs(translated[0] - initialPoint.x) / 2;
@@ -590,7 +593,8 @@ export class DrawHandlerImpl implements DrawHandler {
         this.drawInstance.on('undopoint', (): number => size++);
 
         // Add ability to cancel the latest drawn point
-        this.canvas.on('mousedown.draw', (e: MouseEvent): void => {
+        this.canvas.on('pointerdown.draw', (e: MouseEvent): void => {
+            if (!isInteractionPointer(e)) return;
             if (e.button === 2) {
                 e.stopPropagation();
                 e.preventDefault();
@@ -609,8 +613,9 @@ export class DrawHandlerImpl implements DrawHandler {
             y: null,
         };
 
-        this.canvas.on('mousemove.draw', (e: MouseEvent): void => {
+        this.canvas.on('pointermove.draw', (e: MouseEvent): void => {
             // TODO: Use enumeration after typification cvat-core
+            if (!isInteractionPointer(e)) return;
             if (e.shiftKey && ['polygon', 'polyline'].includes(this.drawData.shapeType)) {
                 if (lastDrawnPoint.x === null || lastDrawnPoint.y === null) {
                     this.drawInstance.draw('point', e);
@@ -927,7 +932,7 @@ export class DrawHandlerImpl implements DrawHandler {
         const { x: initialX, y: initialY } = this.cursorPosition;
         moveShape(this.drawInstance, initialX, initialY);
 
-        this.canvas.on('mousemove.draw', (): void => {
+        this.canvas.on('pointermove.draw', (): void => {
             const { x, y } = this.cursorPosition; // was computed in another callback
             moveShape(this.drawInstance, x, y);
         });
@@ -1112,7 +1117,7 @@ export class DrawHandlerImpl implements DrawHandler {
             }
         });
 
-        this.canvas.on('mousemove.draw', (): void => {
+        this.canvas.on('pointermove.draw', (): void => {
             const [newXtl, newYtl] = [
                 this.drawInstance.x(), this.drawInstance.y(),
                 this.drawInstance.width(), this.drawInstance.height(),
@@ -1165,7 +1170,7 @@ export class DrawHandlerImpl implements DrawHandler {
 
         moveShape(this.drawInstance, this.pointsGroup, initialX, initialY, this.geometry.scale);
 
-        this.canvas.on('mousemove.draw', (): void => {
+        this.canvas.on('pointermove.draw', (): void => {
             const { x, y } = this.cursorPosition; // was computer in another callback
             moveShape(this.drawInstance, this.pointsGroup, x, y, this.geometry.scale);
         });
@@ -1174,7 +1179,8 @@ export class DrawHandlerImpl implements DrawHandler {
     }
 
     private setupPasteEvents(): void {
-        this.canvas.on('mousedown.draw', (e: MouseEvent): void => {
+        this.canvas.on('pointerdown.draw', (e: MouseEvent): void => {
+            if (!isInteractionPointer(e)) return;
             if (e.button === 0 && !e.altKey) {
                 this.drawInstance.fire('done', { originalEvent: e });
             }
@@ -1184,7 +1190,8 @@ export class DrawHandlerImpl implements DrawHandler {
     private setupDrawEvents(): void {
         let initialized = false;
 
-        this.canvas.on('mousedown.draw', (e: MouseEvent): void => {
+        this.canvas.on('pointerdown.draw', (e: MouseEvent): void => {
+            if (!isInteractionPointer(e)) return;
             if (e.button === 0 && !e.altKey) {
                 if (!initialized) {
                     this.drawInstance.draw(e, { snapToGrid: 0.1 });
@@ -1299,7 +1306,8 @@ export class DrawHandlerImpl implements DrawHandler {
             y: 0,
         };
 
-        this.canvas.on('mousemove.crosshair', (e: MouseEvent): void => {
+        this.canvas.on('pointermove.crosshair', (e: MouseEvent): void => {
+            if (!isInteractionPointer(e)) return;
             const [x, y] = translateToSVG((this.canvas.node as any) as SVGSVGElement, [e.clientX, e.clientY]);
             this.cursorPosition = { x, y };
             if (this.crosshair) {

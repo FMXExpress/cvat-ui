@@ -168,7 +168,7 @@ export default function LabelsListComponent(): JSX.Element {
                                 className={
                                     `cvat-objects-sidebar-issue-item ${frameIssue.resolved ? 'cvat-objects-sidebar-issue-resolved' : ''}`
                                 }
-                                onMouseEnter={() => {
+                                onPointerEnter={() => {
                                     const element = window.document.getElementById(
                                         `cvat_canvas_issue_region_${frameIssue.id}`,
                                     );
@@ -177,7 +177,7 @@ export default function LabelsListComponent(): JSX.Element {
                                     }
                                     dispatch(activateObject(null, null, null));
                                 }}
-                                onMouseLeave={() => {
+                                onPointerLeave={() => {
                                     const element = window.document.getElementById(
                                         `cvat_canvas_issue_region_${frameIssue.id}`,
                                     );
@@ -237,12 +237,12 @@ export default function LabelsListComponent(): JSX.Element {
                                     'cvat-objects-sidebar-warning-item' : 'cvat-objects-sidebar-conflict-item'}
                                   ${frameConflict.id === highlightedConflict?.id ? 'cvat-objects-sidebar-item-active' : ''}  `
                             }
-                            onMouseEnter={() => {
+                            onPointerEnter={() => {
                                 if (ready && activeControl === ActiveControl.CURSOR) {
                                     dispatch(highlightConflict(frameConflict));
                                 }
                             }}
-                            onMouseLeave={() => {
+                            onPointerLeave={() => {
                                 if (ready && activeControl === ActiveControl.CURSOR) {
                                     dispatch(highlightConflict(null));
                                 }

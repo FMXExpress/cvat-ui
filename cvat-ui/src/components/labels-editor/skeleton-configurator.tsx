@@ -116,13 +116,14 @@ export default class SkeletonConfigurator extends React.PureComponent<Props, Sta
         const svg = svgRef.current;
 
         window.addEventListener('resize', this.resizeListener);
-        window.document.addEventListener('mouseup', this.onDocumentMouseUp);
+        window.document.addEventListener('pointerup', this.onDocumentPointerUp);
+        window.document.addEventListener('pointercancel', this.onDocumentPointerUp);
         window.dispatchEvent(new Event('resize'));
 
         if (svg) {
             svg.setAttribute('viewBox', '0 0 100 100');
-            svg.addEventListener('mousedown', this.onSVGClick);
-            svg.addEventListener('mousemove', this.onSVGMouseMove);
+            svg.addEventListener('pointerdown', this.onSVGClick);
+            svg.addEventListener('pointermove', this.onSVGPointerMove);
         }
 
         const labels: Record<string, LabelOptColor> = {};
@@ -175,19 +176,20 @@ export default class SkeletonConfigurator extends React.PureComponent<Props, Sta
         const svg = svgRef.current;
 
         if (svg) {
-            svg.removeEventListener('mousedown', this.onSVGClick);
-            svg.removeEventListener('mousemove', this.onSVGMouseMove);
+            svg.removeEventListener('pointerdown', this.onSVGClick);
+            svg.removeEventListener('pointermove', this.onSVGPointerMove);
         }
 
-        window.document.removeEventListener('mouseup', this.onDocumentMouseUp);
+        window.document.removeEventListener('pointerup', this.onDocumentPointerUp);
+        window.document.removeEventListener('pointercancel', this.onDocumentPointerUp);
         window.removeEventListener('resize', this.resizeListener);
     }
 
-    private onDocumentMouseUp = (): void => {
+    private onDocumentPointerUp = (): void => {
         this.draggableElement = null;
     };
 
-    private onSVGMouseMove = (event: MouseEvent): void => {
+    private onSVGPointerMove = (event: PointerEvent): void => {
         const { activeTool } = this.state;
         const svg = this.svgRef.current;
         if (activeTool === 'join' && svg) {
@@ -264,7 +266,7 @@ export default class SkeletonConfigurator extends React.PureComponent<Props, Sta
             }
         };
 
-        edge.addEventListener('mouseenter', () => {
+        edge.addEventListener('pointerenter', () => {
             const { activeTool: currentActiveTool } = this.state;
             if (edge && currentActiveTool === 'delete') {
                 edge.setAttribute('stroke', 'red');
@@ -272,7 +274,7 @@ export default class SkeletonConfigurator extends React.PureComponent<Props, Sta
             }
         });
 
-        edge.addEventListener('mouseleave', () => {
+        edge.addEventListener('pointerleave', () => {
             const { activeTool: currentActiveTool } = this.state;
             if (edge && currentActiveTool === 'delete') {
                 edge.setAttribute('stroke', 'black');
@@ -305,7 +307,7 @@ export default class SkeletonConfigurator extends React.PureComponent<Props, Sta
 
         circle.style.transition = 'r 0.25s';
 
-        circle.addEventListener('mouseover', () => {
+        circle.addEventListener('pointerover', () => {
             circle.setAttribute('stroke-width', '0.3');
             circle.setAttribute('r', '1');
             const text = svg.querySelector(`text[data-for-element-id="${elementID}"]`);
@@ -323,7 +325,7 @@ export default class SkeletonConfigurator extends React.PureComponent<Props, Sta
             }
         });
 
-        circle.addEventListener('mouseout', () => {
+        circle.addEventListener('pointerout', () => {
             circle.setAttribute('stroke-width', '0.1');
             circle.setAttribute('r', '0.75');
             const text = svg.querySelector(`text[data-for-element-id="${elementID}"]`);
@@ -332,7 +334,7 @@ export default class SkeletonConfigurator extends React.PureComponent<Props, Sta
             }
         });
 
-        circle.addEventListener('mousedown', (e: MouseEvent) => {
+        circle.addEventListener('pointerdown', (e: PointerEvent) => {
             const { activeTool: currentActiveTool } = this.state;
             if (e.button === 0 && currentActiveTool === 'drag') {
                 this.draggableElement = circle;
@@ -442,7 +444,7 @@ export default class SkeletonConfigurator extends React.PureComponent<Props, Sta
         return true;
     };
 
-    private onSVGClick = (event: MouseEvent): void => {
+    private onSVGClick = (event: PointerEvent): void => {
         const { activeTool, contextMenuVisible } = this.state;
         const svg = this.svgRef.current;
 

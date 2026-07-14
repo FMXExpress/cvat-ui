@@ -7,6 +7,7 @@ import {
     stringifyPoints, translateToCanvas, translateFromCanvas, translateToSVG,
     findIntersection, zipChannels, Segment, findClosestPointOnSegment, segmentsFromPoints,
     toReversed,
+    isInteractionPointer,
 } from './shared';
 import {
     Geometry, SliceData, Configuration, CanvasHint,
@@ -377,6 +378,7 @@ export class SliceHandlerImpl implements SliceHandler {
         };
 
         const handleCanvasMousedown = (event: MouseEvent): void => {
+            if (!isInteractionPointer(event)) return;
             if (event.altKey) {
                 return;
             }
@@ -404,6 +406,7 @@ export class SliceHandlerImpl implements SliceHandler {
         };
 
         const handleShapeMousedown = (event: MouseEvent, slipping = false): void => {
+            if (!isInteractionPointer(event)) return;
             if (points.length && event.button === 0 && !event.altKey) {
                 const [x, y] = translateToSVG(this.canvas.node as any as SVGSVGElement, [event.clientX, event.clientY]);
                 points[points.length - 1] = [x, y];
@@ -457,6 +460,7 @@ export class SliceHandlerImpl implements SliceHandler {
         };
 
         const handleCanvasMousemove = (event: MouseEvent): void => {
+            if (!isInteractionPointer(event)) return;
             if (points.length) {
                 const [x, y] = translateToSVG(this.canvas.node as any as SVGSVGElement, [event.clientX, event.clientY]);
                 const [prevX, prevY] = points[points.length - 2];
@@ -474,9 +478,9 @@ export class SliceHandlerImpl implements SliceHandler {
             }
         };
 
-        this.shapeContour.on('mousedown.slice', handleShapeMousedown);
-        this.canvas.on('mousedown.slice', handleCanvasMousedown);
-        this.canvas.on('mousemove.slice', handleCanvasMousemove);
+        this.shapeContour.on('pointerdown.slice', handleShapeMousedown);
+        this.canvas.on('pointerdown.slice', handleCanvasMousedown);
+        this.canvas.on('pointermove.slice', handleCanvasMousemove);
     }
 
     private release(): void {
@@ -491,7 +495,7 @@ export class SliceHandlerImpl implements SliceHandler {
         }
 
         if (this.shapeContour) {
-            this.shapeContour.off('mousedown.slice');
+            this.shapeContour.off('pointerdown.slice');
             this.shapeContour.remove();
             this.shapeContour = null;
         }
@@ -501,8 +505,8 @@ export class SliceHandlerImpl implements SliceHandler {
         });
         this.slicingPoints = [];
 
-        this.canvas.off('mousedown.slice');
-        this.canvas.off('mousemove.slice');
+        this.canvas.off('pointerdown.slice');
+        this.canvas.off('pointermove.slice');
         this.enabled = false;
         this.onSliceDone();
         this.onMessage(null, 'slice');

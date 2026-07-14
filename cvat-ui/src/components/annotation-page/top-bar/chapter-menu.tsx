@@ -37,8 +37,8 @@ function ChapterMenu(props: Readonly<Props>): JSX.Element {
                             className={itemClass}
                             key={chapter.id}
                             onClick={() => onSelectChapter(chapter.id)}
-                            onMouseEnter={() => onHoveredChapter?.(chapter.id)}
-                            onMouseLeave={() => onHoveredChapter?.(null)}
+                            onPointerEnter={() => onHoveredChapter?.(chapter.id)}
+                            onPointerLeave={() => onHoveredChapter?.(null)}
                         >
                             <div>
                                 <strong>
