@@ -14,9 +14,14 @@ export interface PointerRouterCallbacks {
     onDoubleTap(event: PointerEvent): void;
     // gate for long-press -> contextmenu synthesis
     longPressAllowed(): boolean;
-    // when true, a single finger draws/edits (like a pen) instead of panning;
-    // used while a drawing/editing tool is active. Two fingers always pinch.
-    singleTouchInteracts(): boolean;
+    // when true, this finger draws/edits/drags (like a pen) instead of
+    // panning; used while a drawing/editing tool is active, or when the
+    // touch lands on a shape or a selection handle. Two fingers always pinch.
+    // Called without an event when a pinch degrades to a single remaining
+    // finger (there is no fresh event to inspect at that point).
+    singleTouchInteracts(event?: PointerEvent): boolean;
+    // a quick single-finger tap (no drag, no pinch); used for tap-to-activate
+    onTap(clientX: number, clientY: number): void;
 }
 
 interface TrackedPointer {
@@ -30,6 +35,8 @@ const LONG_PRESS_SLOP_PX = 10;
 const DOUBLE_TAP_MS = 350;
 const DOUBLE_TAP_SLOP_PX = 30;
 const PALM_REJECTION_MS = 500;
+const TAP_MS = 350;
+const TAP_SLOP_PX = 10;
 
 // Routes raw pointer events into canvas gestures:
 //   mouse/pen  -> passed through to the regular interaction code
@@ -56,6 +63,7 @@ export class PointerGestureRouter {
     private longPressTimeout: number | null = null;
     private longPressCandidate: { pointerId: number; clientX: number; clientY: number; target: EventTarget | null } | null = null;
     private lastTap: { timestamp: number; clientX: number; clientY: number } | null = null;
+    private tapCandidate: { pointerId: number; clientX: number; clientY: number; timestamp: number } | null = null;
 
     public constructor(callbacks: PointerRouterCallbacks) {
         this.callbacks = callbacks;
@@ -139,10 +147,22 @@ export class PointerGestureRouter {
 
             const touches = this.touchPointers;
             if (touches.length === 1) {
-                if (this.callbacks.singleTouchInteracts()) {
-                    // a drawing/editing tool is active: this finger draws like a
-                    // pen, so let the event reach the interaction handlers. It is
-                    // still tracked so a second finger can upgrade it to a pinch.
+                this.tapCandidate = {
+                    pointerId: event.pointerId,
+                    clientX: event.clientX,
+                    clientY: event.clientY,
+                    timestamp: performance.now(),
+                };
+
+                if (this.callbacks.singleTouchInteracts(event)) {
+                    // this finger draws/edits/drags like a pen (a tool is
+                    // active, or the touch landed on a shape/handle), so let
+                    // the event reach the interaction handlers. It is still
+                    // tracked so a second finger can upgrade it to a pinch,
+                    // and long-press still synthesizes contextmenu (native
+                    // touch callouts are suppressed); movement past the slop
+                    // cancels it in pointerMove()
+                    this.scheduleLongPress(event);
                     return true;
                 }
                 this.panPointerID = event.pointerId;
@@ -150,6 +170,7 @@ export class PointerGestureRouter {
                 this.scheduleLongPress(event);
                 this.checkDoubleTap(event);
             } else {
+                this.tapCandidate = null;
                 this.startPinchIfPossible();
             }
 
@@ -198,6 +219,15 @@ export class PointerGestureRouter {
                 event.clientY - this.longPressCandidate.clientY,
             ) > LONG_PRESS_SLOP_PX) {
                 this.cancelLongPress();
+            }
+        }
+
+        if (this.tapCandidate && this.tapCandidate.pointerId === event.pointerId) {
+            if (Math.hypot(
+                event.clientX - this.tapCandidate.clientX,
+                event.clientY - this.tapCandidate.clientY,
+            ) > TAP_SLOP_PX) {
+                this.tapCandidate = null;
             }
         }
 
@@ -255,6 +285,16 @@ export class PointerGestureRouter {
         }
 
         this.pointers.delete(event.pointerId);
+
+        if (event.pointerType === 'touch' && event.type !== 'pointercancel' &&
+            this.tapCandidate && this.tapCandidate.pointerId === event.pointerId &&
+            performance.now() - this.tapCandidate.timestamp < TAP_MS
+        ) {
+            this.callbacks.onTap(this.tapCandidate.clientX, this.tapCandidate.clientY);
+        }
+        if (this.tapCandidate && this.tapCandidate.pointerId === event.pointerId) {
+            this.tapCandidate = null;
+        }
 
         if (event.pointerType === 'touch') {
             const touches = this.touchPointers;
