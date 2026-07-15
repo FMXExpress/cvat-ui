@@ -56,32 +56,26 @@ function parseCSSTransform(text) {
     return null;
 }
 
-// m1 x m2 for plain {a,b,c,d,e,f} 2D affine matrices (m2 applied first)
-function multiplyAffine(m1, m2) {
-    return {
-        a: m1.a * m2.a + m1.c * m2.b,
-        b: m1.b * m2.a + m1.d * m2.b,
-        c: m1.a * m2.c + m1.c * m2.d,
-        d: m1.b * m2.c + m1.d * m2.d,
-        e: m1.a * m2.e + m1.c * m2.f + m1.e,
-        f: m1.b * m2.e + m1.d * m2.f + m1.f,
-    };
-}
-
-// getScreenCTM() with the WebKit CSS-transform bug corrected. cvat-canvas
-// zooms/rotates the content SVG via a CSS transform (scale() rotate() with
-// the default center origin), which WebKit omits from getScreenCTM(); without
-// the correction every client<->image coordinate conversion is wrong on
-// Safari (drawn shapes are discarded as out-of-frame, pinch zoom is centered
-// incorrectly, etc.). The reconstruction relies on the transform being
-// uniform-scale/rotation about the element center, so the center of the
-// transformed bounding rect is a fixed point of the CSS transform.
+// getScreenCTM() with the WebKit CSS-transform bug corrected.
 //
-// IMPORTANT: the return value must be a real SVGMatrix, not a DOMMatrix -
-// WebKit's SVGPoint.matrixTransform() throws
-// "Argument 1 ('matrix') ... must be an instance of SVGMatrix" for anything
-// else, so the corrected matrix is composed with plain arithmetic and copied
-// into a matrix created by createSVGMatrix().
+// cvat-canvas zooms/rotates the content SVG via a CSS transform
+// (scale() rotate(), default center origin). WebKit omits that transform
+// from getScreenCTM(), and what exactly its broken matrix contains is not
+// something we rely on: for the SVG root the true user->client matrix is
+// rebuilt from first principles instead,
+//
+//     trueCTM(root) = translate(rectCenter) x cssLinear x translate(-W/2, -H/2)
+//
+// where rectCenter is the center of getBoundingClientRect() (the fixed point
+// of a center-origin transform), cssLinear is the linear part of the computed
+// CSS transform, and W/H are the SVG's layout width/height (user units map
+// 1:1 to layout pixels - cvat's content SVG has no viewBox). For elements
+// INSIDE the SVG, WebKit's relative matrix root.getScreenCTM()^-1 x
+// el.getScreenCTM() is used, where the missing CSS transform cancels out.
+//
+// The return value must be a real SVGMatrix - WebKit's
+// SVGPoint.matrixTransform() rejects DOMMatrix - so results are composed into
+// matrices created with createSVGMatrix().
 export function getScreenCTMCompat(element) {
     const ctm = element.getScreenCTM();
 
@@ -102,37 +96,41 @@ export function getScreenCTMCompat(element) {
             return ctm;
         }
 
-        const cssMatrix = parseCSSTransform(cssTransform);
-        if (!cssMatrix) {
+        const css = parseCSSTransform(cssTransform);
+        if (!css) {
             return ctm;
         }
 
         const rect = root.getBoundingClientRect();
         const cx = rect.left + rect.width / 2;
         const cy = rect.top + rect.height / 2;
+        const halfW = root.width.baseVal.value / 2;
+        const halfH = root.height.baseVal.value / 2;
 
-        // correction = translate(cx, cy) x css x translate(-cx, -cy)
-        const correction = multiplyAffine(
-            multiplyAffine({
-                a: 1, b: 0, c: 0, d: 1, e: cx, f: cy,
-            }, cssMatrix),
-            {
-                a: 1, b: 0, c: 0, d: 1, e: -cx, f: -cy,
-            },
-        );
-
-        const corrected = multiplyAffine(correction, ctm);
-        const result = root.createSVGMatrix();
-        result.a = corrected.a;
-        result.b = corrected.b;
-        result.c = corrected.c;
-        result.d = corrected.d;
-        result.e = corrected.e;
-        result.f = corrected.f;
+        // translate(cx, cy) x cssLinear x translate(-halfW, -halfH)
+        const rootTrue = root.createSVGMatrix();
+        rootTrue.a = css.a;
+        rootTrue.b = css.b;
+        rootTrue.c = css.c;
+        rootTrue.d = css.d;
+        rootTrue.e = cx - (css.a * halfW + css.c * halfH);
+        rootTrue.f = cy - (css.b * halfW + css.d * halfH);
 
         debugState.corrections += 1;
         debugState.lastTransform = cssTransform;
-        return result;
+
+        if (element === root) {
+            return rootTrue;
+        }
+
+        // relative part: WebKit's missing CSS transform cancels in
+        // root^-1 x element, both being equally wrong
+        const rootCTM = root.getScreenCTM();
+        if (!rootCTM) {
+            return ctm;
+        }
+
+        return rootTrue.multiply(rootCTM.inverse().multiply(ctm));
     } catch (error) {
         debugState.lastError = error instanceof Error ? error.message : `${error}`;
         return ctm;
