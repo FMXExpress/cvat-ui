@@ -1834,8 +1834,41 @@ export class CanvasViewImpl implements CanvasView, Listener {
             longPressAllowed: (): boolean => this.mode === Mode.IDLE,
             // a single finger pans in the modes where the left mouse button
             // pans; in every other mode (drawing, editing, AI tools, region
-            // select, ...) a single finger draws/edits like a pen
-            singleTouchInteracts: (): boolean => !PAN_MODES.includes(this.mode),
+            // select, ...) a single finger draws/edits like a pen. Even in
+            // the pan modes, a touch landing on a shape or on a selection
+            // handle is passed through so an activated shape can be
+            // dragged/resized by finger (panning still starts from empty
+            // canvas)
+            singleTouchInteracts: (event?: PointerEvent): boolean => {
+                if (!PAN_MODES.includes(this.mode)) {
+                    return true;
+                }
+
+                const target = event?.target;
+                return target instanceof Element &&
+                    !!target.closest('.cvat_canvas_shape, [class*="svg_select_points"]');
+            },
+            // fingers produce no hover, so shape activation (driven by the
+            // canvas.moved event on mouse hover) never happens for them;
+            // emulate it on a quick tap: the UI activates the shape under
+            // the tap point (or deactivates when the tap hits empty canvas)
+            onTap: (clientX: number, clientY: number): void => {
+                if (this.mode === Mode.IDLE && !this.isImageLoading) {
+                    const { offset } = this.controller.geometry;
+                    const [x, y] = translateToSVG(this.content, [clientX, clientY]);
+                    this.canvas.dispatchEvent(
+                        new CustomEvent('canvas.moved', {
+                            bubbles: false,
+                            cancelable: true,
+                            detail: {
+                                x: x - offset,
+                                y: y - offset,
+                                states: this.controller.objects,
+                            },
+                        }),
+                    );
+                }
+            },
         });
 
         // capture phase: the router sees every pointerdown before any shape
@@ -1847,7 +1880,11 @@ export class CanvasViewImpl implements CanvasView, Listener {
         // callout, scroll) suppressed.
         this.canvas.addEventListener('pointerdown', (event: PointerEvent): void => {
             const claimed = !this.pointerRouter.pointerDown(event);
-            if (event.pointerType === 'touch' && !PAN_MODES.includes(this.mode)) {
+            // suppress native iOS gestures (loupe, callout, ...) for every
+            // touch that reaches the interaction code; per spec this kills
+            // compatibility mouse events but NOT the click event, which
+            // merge/split/shape-click paths rely on
+            if (event.pointerType === 'touch' && (!claimed || !PAN_MODES.includes(this.mode))) {
                 event.preventDefault();
             }
             if (claimed) {
@@ -1936,10 +1973,14 @@ export class CanvasViewImpl implements CanvasView, Listener {
         // listeners nor generate hover events like canvas.moved below; a move
         // from a single interacting finger is let through to the handlers
         this.canvas.addEventListener('pointermove', (e: PointerEvent): void => {
-            if (e.pointerType === 'touch' && !PAN_MODES.includes(this.mode)) {
+            const passthrough = this.pointerRouter.pointerMove(e);
+            // as with pointerdown above: any touch move that reaches the
+            // interaction code (drawing, or dragging/resizing a shape by
+            // finger) must not trigger native iOS gestures
+            if (e.pointerType === 'touch' && (passthrough || !PAN_MODES.includes(this.mode))) {
                 e.preventDefault();
             }
-            if (!this.pointerRouter.pointerMove(e)) {
+            if (!passthrough) {
                 e.stopPropagation();
             }
         }, { capture: true });
