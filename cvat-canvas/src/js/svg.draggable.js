@@ -8,6 +8,7 @@
 * drags only when a drawing/editing tool is active, otherwise it pans.
 */
 import * as SVG from 'svg.js';
+import { getScreenCTMCompat } from './screenCTM.js';
 
 (function() {
 
@@ -91,7 +92,7 @@ import * as SVG from 'svg.js';
     this.p = this.parent.node.createSVGPoint()
 
     // save current transformation matrix
-    this.m = this.el.node.getScreenCTM().inverse()
+    this.m = getScreenCTMCompat(this.el.node).inverse()
 
     var box = this.getBBox()
 

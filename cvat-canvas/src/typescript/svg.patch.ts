@@ -11,7 +11,7 @@ import '../js/svg.draw.js';
 
 import consts from './consts';
 import { Equation, CuboidModel, Orientation, Edge } from './cuboid';
-import { Point, parsePoints, clamp } from './shared';
+import { Point, parsePoints, clamp, getScreenCTMCompat } from './shared';
 
 // Update constructor
 const originalDraw = SVG.Element.prototype.draw;
@@ -120,7 +120,7 @@ SVG.Element.prototype.draggable = function constructor(...args: any): any {
         originalDraggable.call(this, ...args);
         handler = this.remember('_draggable');
         handler.drag = function (e: any) {
-            this.m = this.el.node.getScreenCTM().inverse();
+            this.m = getScreenCTMCompat(this.el.node).inverse();
             return handler.constructor.prototype.drag.call(this, e);
         };
     } else {
@@ -156,7 +156,7 @@ SVG.Element.prototype.resize = function constructor(...args: any): any {
         };
         handler.update = function (e: any) {
             if (!this.rotationPointPressed) {
-                this.m = this.el.node.getScreenCTM().inverse();
+                this.m = getScreenCTMCompat(this.el.node).inverse();
             }
             handler.constructor.prototype.update.call(this, e);
         };

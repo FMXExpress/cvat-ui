@@ -8,6 +8,7 @@
 * canvas (see pointerRouter.ts), the preview only follows mouse/pen.
 */
 import * as SVG from 'svg.js';
+import { getScreenCTMCompat } from './screenCTM.js';
 
 (function () {
     // Our Object which manages drawing
@@ -69,7 +70,7 @@ import * as SVG from 'svg.js';
         var _this = this;
 
         // get the current transform matrix from screen to element (offset corrected)
-        this.m = this.el.node.getScreenCTM().inverse();
+        this.m = getScreenCTMCompat(this.el.node).inverse();
 
         // we save the current scrolling-offset here
         this.offset = { x: window.pageXOffset, y: window.pageYOffset };
@@ -148,7 +149,7 @@ import * as SVG from 'svg.js';
 
         // Get the current transform matrix
         // it could have been changed since the start or the last update call
-        this.m = this.el.node.getScreenCTM().inverse();
+        this.m = getScreenCTMCompat(this.el.node).inverse();
 
         // Call the calc-function which calculates the new position and size
         this.calc(event);
