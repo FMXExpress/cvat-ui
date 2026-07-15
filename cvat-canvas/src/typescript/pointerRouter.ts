@@ -158,7 +158,11 @@ export class PointerGestureRouter {
                     // this finger draws/edits/drags like a pen (a tool is
                     // active, or the touch landed on a shape/handle), so let
                     // the event reach the interaction handlers. It is still
-                    // tracked so a second finger can upgrade it to a pinch.
+                    // tracked so a second finger can upgrade it to a pinch,
+                    // and long-press still synthesizes contextmenu (native
+                    // touch callouts are suppressed); movement past the slop
+                    // cancels it in pointerMove()
+                    this.scheduleLongPress(event);
                     return true;
                 }
                 this.panPointerID = event.pointerId;
