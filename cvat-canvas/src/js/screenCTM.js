@@ -2,6 +2,18 @@
 //
 // SPDX-License-Identifier: MIT
 
+const debugState = {
+    probed: null,
+    corrections: 0,
+    lastError: null,
+    lastTransform: null,
+};
+
+// diagnostic snapshot for the pointer debug overlay (see canvasView)
+export function getScreenCTMDebugInfo() {
+    return { ...debugState };
+}
+
 let ctmIncludesCSSTransformCache = null;
 function ctmIncludesCSSTransform() {
     // WebKit's getScreenCTM() ignores CSS transforms applied to the SVG
@@ -19,6 +31,7 @@ function ctmIncludesCSSTransform() {
         const ctm = svg.getScreenCTM();
         ctmIncludesCSSTransformCache = !!ctm && Math.abs(ctm.a - 2) < 0.01;
         container.remove();
+        debugState.probed = ctmIncludesCSSTransformCache;
     }
 
     return ctmIncludesCSSTransformCache;
@@ -34,24 +47,37 @@ function ctmIncludesCSSTransform() {
 // transformed bounding rect is a fixed point of the CSS transform.
 export function getScreenCTMCompat(element) {
     const ctm = element.getScreenCTM();
-    if (ctmIncludesCSSTransform()) {
+
+    // whatever happens here, coordinate conversion sits on the hot input path
+    // (every pointer event) - it must never throw, or all canvas input dies
+    try {
+        if (ctmIncludesCSSTransform()) {
+            return ctm;
+        }
+
+        const root = element instanceof SVGSVGElement ? element : element.ownerSVGElement;
+        if (!root) {
+            return ctm;
+        }
+
+        const cssTransform = window.getComputedStyle(root).transform;
+        if (!cssTransform || cssTransform === 'none') {
+            return ctm;
+        }
+
+        // WebKitCSSMatrix fallback: older WebKit lacks the DOMMatrix
+        // string constructor
+        const MatrixClass = typeof DOMMatrix !== 'undefined' ? DOMMatrix : window.WebKitCSSMatrix;
+        const cssMatrix = new MatrixClass(cssTransform);
+        const rect = root.getBoundingClientRect();
+        const cx = rect.left + rect.width / 2;
+        const cy = rect.top + rect.height / 2;
+        const correction = new MatrixClass().translate(cx, cy).multiply(cssMatrix).translate(-cx, -cy);
+        debugState.corrections += 1;
+        debugState.lastTransform = cssTransform;
+        return correction.multiply(ctm);
+    } catch (error) {
+        debugState.lastError = error instanceof Error ? error.message : `${error}`;
         return ctm;
     }
-
-    const root = element instanceof SVGSVGElement ? element : element.ownerSVGElement;
-    if (!root) {
-        return ctm;
-    }
-
-    const cssTransform = window.getComputedStyle(root).transform;
-    if (!cssTransform || cssTransform === 'none') {
-        return ctm;
-    }
-
-    const cssMatrix = new DOMMatrix(cssTransform);
-    const rect = root.getBoundingClientRect();
-    const cx = rect.left + rect.width / 2;
-    const cy = rect.top + rect.height / 2;
-    const correction = new DOMMatrix().translate(cx, cy).multiply(cssMatrix).translate(-cx, -cy);
-    return correction.multiply(ctm);
 }

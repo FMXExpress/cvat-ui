@@ -5,9 +5,9 @@
 
 import * as SVG from 'svg.js';
 import consts from './consts';
-import { getScreenCTMCompat } from '../js/screenCTM';
+import { getScreenCTMCompat, getScreenCTMDebugInfo } from '../js/screenCTM';
 
-export { getScreenCTMCompat };
+export { getScreenCTMCompat, getScreenCTMDebugInfo };
 
 export interface ShapeSizeElement {
     sizeElement: any;

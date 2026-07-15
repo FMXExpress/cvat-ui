@@ -29,6 +29,7 @@ import { PointerGestureRouter } from './pointerRouter';
 import consts from './consts';
 import {
     translateToSVG, translateFromSVG, translateToCanvas, translateFromCanvas,
+    getScreenCTMDebugInfo,
     pointsToNumberArray, parsePoints, displayShapeSize, scalarProduct,
     vectorLength, ShapeSizeElement, DrawnState, rotate2DPoints,
     readPointsFromShape, setupSkeletonEdges, makeSVGFromTemplate,
@@ -1534,6 +1535,58 @@ export class CanvasViewImpl implements CanvasView, Listener {
         this.pointerRouter.pointerUp(event);
     };
 
+    // on-device diagnostics for platforms without devtools (iPad Safari):
+    // enable by appending #cvat-debug to the URL and reloading, or via
+    // localStorage.cvatCanvasDebug = '1'. Renders the last pointer/draw
+    // events and the WebKit CTM workaround state in a corner overlay.
+    private setupPointerDebugOverlay(): void {
+        const overlay = window.document.createElement('div');
+        overlay.style.cssText = 'position: absolute; top: 0; left: 0; z-index: 100; max-width: 70%;' +
+            'background: rgba(0, 0, 0, 0.75); color: #7fff7f; font: 10px/1.3 monospace;' +
+            'padding: 4px 6px; pointer-events: none; white-space: pre;';
+        this.canvas.appendChild(overlay);
+
+        const lines: string[] = [];
+        const log = (line: string): void => {
+            lines.push(line);
+            while (lines.length > 14) lines.shift();
+            const info = getScreenCTMDebugInfo();
+            overlay.textContent = (
+                `ctmNative=${info.probed} fixes=${info.corrections} ` +
+                `err=${info.lastError || '-'}\n${lines.join('\n')}`
+            );
+        };
+
+        const describe = (e: PointerEvent): string => (
+            `${e.pointerType || '?'}#${e.pointerId} b${e.button} ${Math.round(e.clientX)},${Math.round(e.clientY)}`
+        );
+
+        let lastMoveLogged = 0;
+        this.canvas.addEventListener('pointerdown', (e: PointerEvent) => {
+            const [x, y] = translateToSVG(this.content, [e.clientX, e.clientY]);
+            log(`v ${describe(e)} mode=${this.mode} ->${Math.round(x)},${Math.round(y)}`);
+        }, { capture: true });
+        this.canvas.addEventListener('pointermove', (e: PointerEvent) => {
+            if (performance.now() - lastMoveLogged > 400) {
+                lastMoveLogged = performance.now();
+                log(`~ ${describe(e)}`);
+            }
+        }, { capture: true });
+        window.document.addEventListener('pointerup', (e: PointerEvent) => log(`^ ${describe(e)}`), { capture: true });
+        window.document.addEventListener('pointercancel', (e: PointerEvent) => log(`X CANCEL ${describe(e)}`), { capture: true });
+
+        for (const eventName of ['canvas.zoom', 'canvas.drawn', 'canvas.canceled', 'canvas.setup']) {
+            this.canvas.addEventListener(eventName, () => log(`* ${eventName} mode=${this.mode}`));
+        }
+
+        window.addEventListener('error', (e: ErrorEvent) => {
+            log(`!! ${e.message}`.slice(0, 120));
+        });
+        window.addEventListener('unhandledrejection', (e: PromiseRejectionEvent) => {
+            log(`!! rejection: ${e.reason}`.slice(0, 120));
+        });
+    }
+
     public constructor(model: CanvasModel & Master, controller: CanvasController) {
         this.controller = controller;
         this.geometry = controller.geometry;
@@ -1806,14 +1859,16 @@ export class CanvasViewImpl implements CanvasView, Listener {
             }
         });
 
-        // WebKit/iOS Safari gives the target element implicit pointer capture on
-        // pointerdown, after which it does not reliably deliver pointermove/up to
-        // window. The vendored SVG.js plugins (draw/draggable/resize) bind their
-        // move/end handlers on window, so without releasing the capture, drawing,
-        // dragging and resizing silently do nothing on Safari while the
-        // content-bound crosshair still updates. Release it so events flow to
-        // window as the plugins expect (no-op on Chromium, which already does).
+        // WebKit gives the target element implicit pointer capture on
+        // pointerdown for direct-manipulation pointers. For PEN input,
+        // releasing it makes move/up delivery to window (where the vendored
+        // SVG.js plugins bind their handlers) behave like Chromium. For TOUCH,
+        // releasing the implicit capture on iOS can make Safari re-evaluate
+        // the gesture and stop delivering the pointer stream entirely, so
+        // touch capture is left alone (captured events still bubble to
+        // window through the capture target).
         this.content.addEventListener('pointerdown', (event: PointerEvent): void => {
+            if (event.pointerType === 'touch') return;
             const target = event.target as Element | null;
             if (target?.hasPointerCapture?.(event.pointerId)) {
                 target.releasePointerCapture(event.pointerId);
@@ -1914,6 +1969,17 @@ export class CanvasViewImpl implements CanvasView, Listener {
         });
 
         this.content.oncontextmenu = (): boolean => false;
+
+        try {
+            if (window.location.hash.includes('cvat-debug') ||
+                window.localStorage.getItem('cvatCanvasDebug') === '1') {
+                this.setupPointerDebugOverlay();
+            }
+        } catch (_: unknown) {
+            // localStorage can throw in private browsing contexts; the
+            // overlay is diagnostics only, never break the canvas for it
+        }
+
         model.subscribe(this);
     }
 
