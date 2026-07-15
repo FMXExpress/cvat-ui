@@ -91,7 +91,8 @@ export function getScreenCTMCompat(element) {
             return ctm;
         }
 
-        const cssTransform = window.getComputedStyle(root).transform;
+        const style = window.getComputedStyle(root);
+        const cssTransform = style.transform;
         if (!cssTransform || cssTransform === 'none') {
             return ctm;
         }
@@ -104,8 +105,19 @@ export function getScreenCTMCompat(element) {
         const rect = root.getBoundingClientRect();
         const cx = rect.left + rect.width / 2;
         const cy = rect.top + rect.height / 2;
-        const halfW = root.width.baseVal.value / 2;
-        const halfH = root.height.baseVal.value / 2;
+
+        // the rendered (untransformed) layout size: cvat sizes the content
+        // SVG via CSS style.width/height, so the width/height ATTRIBUTES
+        // (width.baseVal) do not reflect the real layout box - the computed
+        // style does. User units map 1:1 onto layout pixels (no viewBox).
+        let layoutW = parseFloat(style.width);
+        let layoutH = parseFloat(style.height);
+        if (!Number.isFinite(layoutW) || !Number.isFinite(layoutH) || layoutW <= 0 || layoutH <= 0) {
+            layoutW = root.width.baseVal.value;
+            layoutH = root.height.baseVal.value;
+        }
+        const halfW = layoutW / 2;
+        const halfH = layoutH / 2;
 
         // translate(cx, cy) x cssLinear x translate(-halfW, -halfH)
         const rootTrue = root.createSVGMatrix();
