@@ -29,7 +29,7 @@ import { PointerGestureRouter } from './pointerRouter';
 import consts from './consts';
 import {
     translateToSVG, translateFromSVG, translateToCanvas, translateFromCanvas,
-    getScreenCTMDebugInfo,
+    getScreenCTMDebugInfo, getScreenCTMCompat,
     pointsToNumberArray, parsePoints, displayShapeSize, scalarProduct,
     vectorLength, ShapeSizeElement, DrawnState, rotate2DPoints,
     readPointsFromShape, setupSkeletonEdges, makeSVGFromTemplate,
@@ -1565,6 +1565,15 @@ export class CanvasViewImpl implements CanvasView, Listener {
         this.canvas.addEventListener('pointerdown', (e: PointerEvent) => {
             const [x, y] = translateToSVG(this.content, [e.clientX, e.clientY]);
             log(`v ${describe(e)} mode=${this.mode} ->${Math.round(x)},${Math.round(y)}`);
+            const raw = this.content.getScreenCTM();
+            const fixed = getScreenCTMCompat(this.content);
+            const rect = this.content.getBoundingClientRect();
+            const { scale, offset } = this.geometry;
+            log(`D s=${scale.toFixed(3)} off=${offset} ` +
+                `raw=${raw ? `${raw.a.toFixed(3)}/${Math.round(raw.e)},${Math.round(raw.f)}` : 'null'} ` +
+                `fix=${fixed ? `${fixed.a.toFixed(3)}/${Math.round(fixed.e)},${Math.round(fixed.f)}` : 'null'}`);
+            log(`D rect=${Math.round(rect.left)},${Math.round(rect.top)} ${Math.round(rect.width)}x${Math.round(rect.height)} ` +
+                `svg=${Math.round(this.content.width.baseVal.value)}x${Math.round(this.content.height.baseVal.value)}`);
         }, { capture: true });
         this.canvas.addEventListener('pointermove', (e: PointerEvent) => {
             if (performance.now() - lastMoveLogged > 400) {
