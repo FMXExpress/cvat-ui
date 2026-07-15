@@ -1806,6 +1806,20 @@ export class CanvasViewImpl implements CanvasView, Listener {
             }
         });
 
+        // WebKit/iOS Safari gives the target element implicit pointer capture on
+        // pointerdown, after which it does not reliably deliver pointermove/up to
+        // window. The vendored SVG.js plugins (draw/draggable/resize) bind their
+        // move/end handlers on window, so without releasing the capture, drawing,
+        // dragging and resizing silently do nothing on Safari while the
+        // content-bound crosshair still updates. Release it so events flow to
+        // window as the plugins expect (no-op on Chromium, which already does).
+        this.content.addEventListener('pointerdown', (event: PointerEvent): void => {
+            const target = event.target as Element | null;
+            if (target?.hasPointerCapture?.(event.pointerId)) {
+                target.releasePointerCapture(event.pointerId);
+            }
+        });
+
         window.document.addEventListener('pointerup', this.onPointerUp);
         window.document.addEventListener('pointercancel', this.onPointerUp);
         window.document.addEventListener('keydown', this.onKeyDown);
