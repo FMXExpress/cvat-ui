@@ -1573,7 +1573,8 @@ export class CanvasViewImpl implements CanvasView, Listener {
                 `raw=${raw ? `${raw.a.toFixed(3)}/${Math.round(raw.e)},${Math.round(raw.f)}` : 'null'} ` +
                 `fix=${fixed ? `${fixed.a.toFixed(3)}/${Math.round(fixed.e)},${Math.round(fixed.f)}` : 'null'}`);
             log(`D rect=${Math.round(rect.left)},${Math.round(rect.top)} ${Math.round(rect.width)}x${Math.round(rect.height)} ` +
-                `svg=${Math.round(this.content.width.baseVal.value)}x${Math.round(this.content.height.baseVal.value)}`);
+                `svg=${window.getComputedStyle(this.content).width}x${window.getComputedStyle(this.content).height} ` +
+                `attr=${Math.round(this.content.width.baseVal.value)}x${Math.round(this.content.height.baseVal.value)}`);
         }, { capture: true });
         this.canvas.addEventListener('pointermove', (e: PointerEvent) => {
             if (performance.now() - lastMoveLogged > 400) {
