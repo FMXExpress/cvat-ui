@@ -4,8 +4,8 @@
 *
 * Vendored into cvat-canvas and converted from mouse/touch events to
 * pointer events so that dragging works with pen input (Apple Pencil).
-* Fingers intentionally do not drag: on touch devices they pan/pinch
-* the canvas instead (see pointerRouter.ts).
+* Touch is gated by the gesture router (pointerRouter.ts): a finger
+* drags only when a drawing/editing tool is active, otherwise it pans.
 */
 import * as SVG from 'svg.js';
 
@@ -64,9 +64,6 @@ import * as SVG from 'svg.js';
   // start dragging
   DragHandler.prototype.start = function(e){
 
-    // fingers pan and pinch the canvas, they never drag elements
-    if(e.pointerType === 'touch') return
-
     // check for left button
     if(e.type == 'click'|| e.type == 'mousedown' || e.type == 'mousemove' || e.type == 'pointerdown'){
       if((e.which || e.buttons) != 1){
@@ -123,7 +120,7 @@ import * as SVG from 'svg.js';
 
     // add drag and end events to window
     SVG.on(window, 'pointermove.drag', function(e){
-      if(!_this.ownsEvent(e) || e.pointerType === 'touch') return
+      if(!_this.ownsEvent(e)) return
       // chorded buttons: releasing the dragging button while another is held
       // fires no pointerup, only a buttons transition on pointermove
       if(e.pointerType === 'mouse' && e.isTrusted && (e.buttons & 1) === 0){

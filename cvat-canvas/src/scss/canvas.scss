@@ -431,6 +431,19 @@ g.cvat_canvas_shape_occluded {
     outline: 10px solid black;
     width: 100%;
     height: 100%;
+
+    // suppress iOS Safari's text-selection loupe / callout when a finger
+    // draws or edits on the SVG (touch-action none stops scroll/zoom hijack)
+    touch-action: none;
+    user-select: none;
+    -webkit-user-select: none;
+    -webkit-touch-callout: none;
+
+    * {
+        -webkit-touch-callout: none;
+        -webkit-user-select: none;
+        user-select: none;
+    }
 }
 
 .cvat_masks_canvas_wrapper {

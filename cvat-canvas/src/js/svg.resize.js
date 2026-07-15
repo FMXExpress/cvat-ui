@@ -347,7 +347,7 @@ import * as SVG from 'svg.js';
         // movement and release; touch pointers are ignored: fingers pan and
         // pinch the canvas, they never resize elements
         SVG.on(window, 'pointermove.resize', function (e) {
-            if (_this._ownsEvent(e) && e.pointerType !== 'touch') {
+            if (_this._ownsEvent(e)) {
                 // chorded buttons: releasing the resizing button while another
                 // is held fires no pointerup, only a buttons transition
                 if (e.pointerType === 'mouse' && e.isTrusted && (e.buttons & 1) === 0) {

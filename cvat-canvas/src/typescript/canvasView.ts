@@ -43,6 +43,10 @@ import {
     HighlightSeverity, GroupData, JoinData, CanvasHint,
 } from './canvasModel';
 
+// modes where a single finger pans the frame (the same modes where the left
+// mouse button pans); in any other mode a single finger draws/edits like a pen
+const PAN_MODES: Mode[] = [Mode.IDLE, Mode.DRAG_CANVAS, Mode.MERGE, Mode.SPLIT];
+
 export interface CanvasView {
     html(): HTMLDivElement;
     setupConflictRegions(clientID: number): number[];
@@ -1732,10 +1736,9 @@ export class CanvasViewImpl implements CanvasView, Listener {
 
         this.pointerRouter = new PointerGestureRouter({
             onPanStart: (clientX: number, clientY: number): void => {
-                // fingers pan the frame in the same modes where the left
-                // mouse button pans it, never during drawing/editing
-                // (e.g. the fabric masks canvas handles its own input there)
-                if ([Mode.IDLE, Mode.DRAG_CANVAS, Mode.MERGE, Mode.SPLIT].includes(this.mode)) {
+                // the router only pans in PAN_MODES, but guard here too since
+                // enableDrag throws if the model is in an incompatible mode
+                if (PAN_MODES.includes(this.mode)) {
                     this.controller.enableDrag(clientX, clientY);
                 }
             },
@@ -1766,24 +1769,36 @@ export class CanvasViewImpl implements CanvasView, Listener {
                 }
             },
             longPressAllowed: (): boolean => this.mode === Mode.IDLE,
+            // a single finger pans in the modes where the left mouse button
+            // pans; in every other mode (drawing, editing, AI tools, region
+            // select, ...) a single finger draws/edits like a pen
+            singleTouchInteracts: (): boolean => !PAN_MODES.includes(this.mode),
         });
 
         // capture phase: the router sees every pointerdown before any shape
         // handler or SVG.js plugin can stopPropagation() it (pen tracking for
-        // palm rejection stays correct), and events it claims (all touch:
-        // pan/pinch/rejected palm) are stopped here so no descendant listener
-        // ever receives them
+        // palm rejection stays correct). Gestures it claims (pan/pinch/rejected
+        // palm) are stopped here so no descendant listener receives them; a
+        // finger it lets through (drawing/editing tool active) reaches the
+        // handlers but still has its native iOS gesture (text-select loupe,
+        // callout, scroll) suppressed.
         this.canvas.addEventListener('pointerdown', (event: PointerEvent): void => {
-            if (!this.pointerRouter.pointerDown(event)) {
+            const claimed = !this.pointerRouter.pointerDown(event);
+            if (event.pointerType === 'touch' && !PAN_MODES.includes(this.mode)) {
+                event.preventDefault();
+            }
+            if (claimed) {
                 event.stopPropagation();
             }
         }, { capture: true });
 
         this.canvas.addEventListener('pointerdown', (event: PointerEvent): void => {
+            // touch panning is driven entirely by the router (onPanStart);
+            // this handles mouse/pen button panning only
+            if (event.pointerType === 'touch') return;
             if ([0, 1].includes(event.button)) {
                 if (
-                    [Mode.IDLE, Mode.DRAG_CANVAS, Mode.MERGE, Mode.SPLIT]
-                        .includes(this.mode) || event.button === 1 || event.altKey
+                    PAN_MODES.includes(this.mode) || event.button === 1 || event.altKey
                 ) {
                     this.mousePanButtonMask = event.button === 1 ? 0b100 : 0b001;
                     this.controller.enableDrag(event.clientX, event.clientY);
@@ -1837,10 +1852,14 @@ export class CanvasViewImpl implements CanvasView, Listener {
             event.preventDefault();
         });
 
-        // capture phase: touch moves (pan/pinch, handled inside the router via
-        // callbacks) are consumed here and never reach descendant listeners,
-        // and never generate hover events like canvas.moved below
+        // capture phase: touch moves the router owns (pan/pinch, handled inside
+        // it via callbacks) are consumed here and never reach descendant
+        // listeners nor generate hover events like canvas.moved below; a move
+        // from a single interacting finger is let through to the handlers
         this.canvas.addEventListener('pointermove', (e: PointerEvent): void => {
+            if (e.pointerType === 'touch' && !PAN_MODES.includes(this.mode)) {
+                e.preventDefault();
+            }
             if (!this.pointerRouter.pointerMove(e)) {
                 e.stopPropagation();
             }

@@ -86,13 +86,11 @@ import * as SVG from 'svg.js';
         // Fire our `drawstart`-event. We send the offset-corrected cursor-position along
         this.el.fire('drawstart', {event:event, p:this.p, m:this.m});
 
-        // We need to bind the update-function to the pointermove event to keep
-        // track of the cursor; touch pointers are ignored (fingers pan/pinch
-        // the canvas, the drawing preview only follows mouse/pen)
+        // Bind the update-function to pointermove so the drawing preview
+        // follows the cursor / finger / pen. The gesture router (pointerRouter)
+        // decides whether a finger reaches drawing at all.
         SVG.on(window, 'pointermove.draw', function (e) {
-            if (e.pointerType !== 'touch') {
-                _this.update(e);
-            }
+            _this.update(e);
         });
 
         // Every consecutive call to start should map to point now

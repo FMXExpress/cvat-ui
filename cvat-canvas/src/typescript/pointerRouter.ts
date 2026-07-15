@@ -14,6 +14,9 @@ export interface PointerRouterCallbacks {
     onDoubleTap(event: PointerEvent): void;
     // gate for long-press -> contextmenu synthesis
     longPressAllowed(): boolean;
+    // when true, a single finger draws/edits (like a pen) instead of panning;
+    // used while a drawing/editing tool is active. Two fingers always pinch.
+    singleTouchInteracts(): boolean;
 }
 
 interface TrackedPointer {
@@ -30,18 +33,19 @@ const PALM_REJECTION_MS = 500;
 
 // Routes raw pointer events into canvas gestures:
 //   mouse/pen  -> passed through to the regular interaction code
-//   1 finger   -> pans the frame
+//   1 finger   -> pans the frame, OR draws/edits when singleTouchInteracts()
+//                 is true (a drawing/editing tool is active)
 //   2 fingers  -> pinch zoom
 //   touch while a pen is (recently) active -> ignored (palm rejection)
 // It also synthesizes contextmenu on long-press and reports double taps
 // for touch/pen input.
 //
 // The router must observe events in the CAPTURE phase on the canvas wrapper:
-// pointerDown()/pointerMove() return false for every touch pointer (the
-// router owns all finger gestures), and the caller is expected to
-// stopPropagation() such events so no descendant listener (shape handlers,
-// SVG.js plugins, selectors) ever sees them. Mouse and pen return true and
-// propagate as usual.
+// pointerDown()/pointerMove() return false when the router OWNS the gesture
+// (pan, pinch, rejected palm), and the caller is expected to stopPropagation()
+// so no descendant listener (shape handlers, SVG.js plugins, selectors) ever
+// sees them. They return true when the event should reach the interaction code
+// (mouse, pen, and a single finger while singleTouchInteracts() is true).
 export class PointerGestureRouter {
     private callbacks: PointerRouterCallbacks;
     private pointers: Map<number, TrackedPointer> = new Map();
@@ -135,6 +139,12 @@ export class PointerGestureRouter {
 
             const touches = this.touchPointers;
             if (touches.length === 1) {
+                if (this.callbacks.singleTouchInteracts()) {
+                    // a drawing/editing tool is active: this finger draws like a
+                    // pen, so let the event reach the interaction handlers. It is
+                    // still tracked so a second finger can upgrade it to a pinch.
+                    return true;
+                }
                 this.panPointerID = event.pointerId;
                 this.callbacks.onPanStart(event.clientX, event.clientY);
                 this.scheduleLongPress(event);
@@ -216,8 +226,19 @@ export class PointerGestureRouter {
                 }
                 this.pinchDistance = distance;
             }
-        } else if (this.panPointerID === event.pointerId) {
+            return false;
+        }
+
+        if (this.panPointerID === event.pointerId) {
             this.callbacks.onPanMove(event.clientX, event.clientY);
+            return false;
+        }
+
+        // a single interacting finger (drawing/editing tool active, not panning
+        // or pinching): let the move reach the handlers so drag-draw and the
+        // crosshair follow it
+        if (this.panPointerID === null && this.touchPointers.length === 1) {
+            return true;
         }
 
         return false;
@@ -239,8 +260,9 @@ export class PointerGestureRouter {
             const touches = this.touchPointers;
             if (this.pinchDistance !== null && touches.length < 2) {
                 this.pinchDistance = null;
-                // a remaining finger continues as pan
-                if (touches.length === 1) {
+                // a remaining finger continues as pan (only when it would not
+                // instead be interacting with a drawing/editing tool)
+                if (touches.length === 1 && !this.callbacks.singleTouchInteracts()) {
                     const [[pointerId, pointer]] = touches;
                     this.panPointerID = pointerId;
                     this.callbacks.onPanStart(pointer.clientX, pointer.clientY);

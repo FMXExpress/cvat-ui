@@ -166,13 +166,11 @@ SelectHandler.prototype.drawPoints = function () {
         var curriedEvent = (function (k) {
             return function (ev) {
                 ev = ev || window.event;
-                // fingers pan and pinch the canvas, they never grab handles
-                if (ev.pointerType === 'touch') return;
                 ev.preventDefault ? ev.preventDefault() : ev.returnValue = false;
                 ev.stopPropagation();
 
-                var x = ev.pageX || ev.touches[0].pageX;
-                var y = ev.pageY || ev.touches[0].pageY;
+                var x = ev.pageX;
+                var y = ev.pageY;
                 _this.el.fire('point', {x: x, y: y, i: k, event: ev});
             };
         })(i);
@@ -266,13 +264,11 @@ SelectHandler.prototype.selectRect = function (value) {
     function getMoseDownFunc(eventName) {
         return function (ev) {
             ev = ev || window.event;
-            // fingers pan and pinch the canvas, they never grab handles
-            if (ev.pointerType === 'touch') return;
             ev.preventDefault ? ev.preventDefault() : ev.returnValue = false;
             ev.stopPropagation();
 
-            var x = ev.pageX || ev.touches[0].pageX;
-            var y = ev.pageY || ev.touches[0].pageY;
+            var x = ev.pageX;
+            var y = ev.pageY;
             _this.el.fire(eventName, {x: x, y: y, event: ev});
         };
     }
@@ -305,13 +301,11 @@ SelectHandler.prototype.selectRect = function (value) {
 
         var curriedEvent = function (ev) {
             ev = ev || window.event;
-            // fingers pan and pinch the canvas, they never grab handles
-            if (ev.pointerType === 'touch') return;
             ev.preventDefault ? ev.preventDefault() : ev.returnValue = false;
             ev.stopPropagation();
 
-            var x = ev.pageX || ev.touches[0].pageX;
-            var y = ev.pageY || ev.touches[0].pageY;
+            var x = ev.pageX;
+            var y = ev.pageY;
             _this.el.fire('rot', {x: x, y: y, event: ev});
         };
 
