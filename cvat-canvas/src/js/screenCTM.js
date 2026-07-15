@@ -37,6 +37,37 @@ function ctmIncludesCSSTransform() {
     return ctmIncludesCSSTransformCache;
 }
 
+// 2D affine components of a computed CSS transform string
+function parseCSSTransform(text) {
+    if (text.startsWith('matrix3d(')) {
+        const v = text.slice(9, -1).split(',').map(Number);
+        return {
+            a: v[0], b: v[1], c: v[4], d: v[5], e: v[12], f: v[13],
+        };
+    }
+
+    if (text.startsWith('matrix(')) {
+        const v = text.slice(7, -1).split(',').map(Number);
+        return {
+            a: v[0], b: v[1], c: v[2], d: v[3], e: v[4], f: v[5],
+        };
+    }
+
+    return null;
+}
+
+// m1 x m2 for plain {a,b,c,d,e,f} 2D affine matrices (m2 applied first)
+function multiplyAffine(m1, m2) {
+    return {
+        a: m1.a * m2.a + m1.c * m2.b,
+        b: m1.b * m2.a + m1.d * m2.b,
+        c: m1.a * m2.c + m1.c * m2.d,
+        d: m1.b * m2.c + m1.d * m2.d,
+        e: m1.a * m2.e + m1.c * m2.f + m1.e,
+        f: m1.b * m2.e + m1.d * m2.f + m1.f,
+    };
+}
+
 // getScreenCTM() with the WebKit CSS-transform bug corrected. cvat-canvas
 // zooms/rotates the content SVG via a CSS transform (scale() rotate() with
 // the default center origin), which WebKit omits from getScreenCTM(); without
@@ -45,6 +76,12 @@ function ctmIncludesCSSTransform() {
 // incorrectly, etc.). The reconstruction relies on the transform being
 // uniform-scale/rotation about the element center, so the center of the
 // transformed bounding rect is a fixed point of the CSS transform.
+//
+// IMPORTANT: the return value must be a real SVGMatrix, not a DOMMatrix -
+// WebKit's SVGPoint.matrixTransform() throws
+// "Argument 1 ('matrix') ... must be an instance of SVGMatrix" for anything
+// else, so the corrected matrix is composed with plain arithmetic and copied
+// into a matrix created by createSVGMatrix().
 export function getScreenCTMCompat(element) {
     const ctm = element.getScreenCTM();
 
@@ -56,7 +93,7 @@ export function getScreenCTMCompat(element) {
         }
 
         const root = element instanceof SVGSVGElement ? element : element.ownerSVGElement;
-        if (!root) {
+        if (!root || !ctm) {
             return ctm;
         }
 
@@ -65,17 +102,37 @@ export function getScreenCTMCompat(element) {
             return ctm;
         }
 
-        // WebKitCSSMatrix fallback: older WebKit lacks the DOMMatrix
-        // string constructor
-        const MatrixClass = typeof DOMMatrix !== 'undefined' ? DOMMatrix : window.WebKitCSSMatrix;
-        const cssMatrix = new MatrixClass(cssTransform);
+        const cssMatrix = parseCSSTransform(cssTransform);
+        if (!cssMatrix) {
+            return ctm;
+        }
+
         const rect = root.getBoundingClientRect();
         const cx = rect.left + rect.width / 2;
         const cy = rect.top + rect.height / 2;
-        const correction = new MatrixClass().translate(cx, cy).multiply(cssMatrix).translate(-cx, -cy);
+
+        // correction = translate(cx, cy) x css x translate(-cx, -cy)
+        const correction = multiplyAffine(
+            multiplyAffine({
+                a: 1, b: 0, c: 0, d: 1, e: cx, f: cy,
+            }, cssMatrix),
+            {
+                a: 1, b: 0, c: 0, d: 1, e: -cx, f: -cy,
+            },
+        );
+
+        const corrected = multiplyAffine(correction, ctm);
+        const result = root.createSVGMatrix();
+        result.a = corrected.a;
+        result.b = corrected.b;
+        result.c = corrected.c;
+        result.d = corrected.d;
+        result.e = corrected.e;
+        result.f = corrected.f;
+
         debugState.corrections += 1;
         debugState.lastTransform = cssTransform;
-        return correction.multiply(ctm);
+        return result;
     } catch (error) {
         debugState.lastError = error instanceof Error ? error.message : `${error}`;
         return ctm;
