@@ -10,6 +10,7 @@
 * pointer events so that resizing works with pen input (Apple Pencil).
 */;
 import * as SVG from 'svg.js';
+import { getScreenCTMCompat } from './screenCTM.js';
 
 (function() {
 "use strict";
@@ -117,7 +118,7 @@ import * as SVG from 'svg.js';
 
         var _this = this;
 
-        this.m = this.el.node.getScreenCTM().inverse();
+        this.m = getScreenCTMCompat(this.el.node).inverse();
         this.offset = { x: window.pageXOffset, y: window.pageYOffset };
 
         var startEvent = event.detail.event;

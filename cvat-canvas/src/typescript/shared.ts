@@ -5,6 +5,9 @@
 
 import * as SVG from 'svg.js';
 import consts from './consts';
+import { getScreenCTMCompat } from '../js/screenCTM';
+
+export { getScreenCTMCompat };
 
 export interface ShapeSizeElement {
     sizeElement: any;
@@ -62,7 +65,7 @@ export interface DrawnState {
 // to the coordinate system of a client
 export function translateFromSVG(svg: SVGSVGElement, points: number[]): number[] {
     const output = [];
-    const transformationMatrix = svg.getScreenCTM() as DOMMatrix;
+    const transformationMatrix = getScreenCTMCompat(svg);
     let pt = svg.createSVGPoint();
     for (let i = 0; i < points.length - 1; i += 2) {
         pt.x = points[i];
@@ -78,7 +81,7 @@ export function translateFromSVG(svg: SVGSVGElement, points: number[]): number[]
 // to the canvas coordinate system
 export function translateToSVG(svg: SVGSVGElement, points: number[]): number[] {
     const output = [];
-    const transformationMatrix = (svg.getScreenCTM() as DOMMatrix).inverse();
+    const transformationMatrix = getScreenCTMCompat(svg).inverse();
     let pt = svg.createSVGPoint();
     for (let i = 0; i < points.length; i += 2) {
         pt.x = points[i];
