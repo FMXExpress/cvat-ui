@@ -14,12 +14,14 @@ import Collapse from 'antd/lib/collapse';
 import Dropdown from 'antd/lib/dropdown';
 import Button from 'antd/lib/button';
 import message from 'antd/lib/message';
+import notification from 'antd/lib/notification';
 import Icon from '@ant-design/icons';
 import { MenuProps } from 'antd/lib/menu';
 
 import { MainMenuIcon } from 'icons';
 import { Job, JobState } from 'cvat-core-wrapper';
 import { usePlugins } from 'utils/hooks';
+import { downloadJobVideo } from 'utils/job-video';
 
 import CVATTooltip from 'components/common/cvat-tooltip';
 import { openAnnotationsActionModal } from 'components/annotation-page/annotations-actions/annotations-actions-modal';
@@ -35,6 +37,7 @@ import { updateJobAsync } from 'actions/jobs-actions';
 export enum Actions {
     LOAD_JOB_ANNO = 'load_job_anno',
     EXPORT_JOB_DATASET = 'export_job_dataset',
+    EXPORT_VIDEO = 'export_video',
     REMOVE_ANNOTATIONS = 'remove_annotations',
     RUN_ACTIONS = 'run_actions',
     OPEN_TASK = 'open_task',
@@ -58,6 +61,20 @@ function AnnotationMenuComponent(): JSX.Element {
 
     const exportDataset = useCallback(() => {
         dispatch(exportActions.openExportDatasetModal(jobInstance));
+    }, [jobInstance]);
+
+    const exportVideo = useCallback(() => {
+        const key = 'cvat-export-job-video';
+        message.loading({ content: 'Preparing video download...', key, duration: 0 });
+        downloadJobVideo(jobInstance.id).then(() => {
+            message.success({ content: 'Video download started', key, duration: 2 });
+        }).catch((error: Error) => {
+            message.destroy(key);
+            notification.error({
+                message: 'Could not export the job video',
+                description: error.message,
+            });
+        });
     }, [jobInstance]);
 
     const finishJob = useCallback(() => {
@@ -114,6 +131,16 @@ function AnnotationMenuComponent(): JSX.Element {
         label: 'Export job dataset',
         onClick: exportDataset,
     }, 20]);
+
+    // the signed video download endpoint only exists for video-backed
+    // (interpolation) jobs; image-set jobs never see the item
+    if (jobInstance.mode === 'interpolation') {
+        menuItems.push([{
+            key: Actions.EXPORT_VIDEO,
+            label: 'Export video',
+            onClick: exportVideo,
+        }, 25]);
+    }
 
     menuItems.push([{
         key: Actions.REMOVE_ANNOTATIONS,
