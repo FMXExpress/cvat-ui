@@ -3,7 +3,9 @@
 //
 // SPDX-License-Identifier: MIT
 
-import React, { useCallback, useEffect, useState } from 'react';
+import React, {
+    useCallback, useEffect, useRef, useState,
+} from 'react';
 import { useSelector, useDispatch } from 'react-redux';
 import { useHistory } from 'react-router';
 import Modal from 'antd/lib/modal';
@@ -19,7 +21,7 @@ import Icon from '@ant-design/icons';
 import { MenuProps } from 'antd/lib/menu';
 
 import { MainMenuIcon } from 'icons';
-import { Job, JobState } from 'cvat-core-wrapper';
+import { DimensionType, Job, JobState } from 'cvat-core-wrapper';
 import { usePlugins } from 'utils/hooks';
 import { downloadJobVideo } from 'utils/job-video';
 
@@ -63,17 +65,26 @@ function AnnotationMenuComponent(): JSX.Element {
         dispatch(exportActions.openExportDatasetModal(jobInstance));
     }, [jobInstance]);
 
+    const exportVideoInFlight = useRef(false);
     const exportVideo = useCallback(() => {
+        // guard against double-clicks: a second mint would start a second
+        // full download of a potentially very large file
+        if (exportVideoInFlight.current) return;
+        exportVideoInFlight.current = true;
         const key = 'cvat-export-job-video';
         message.loading({ content: 'Preparing video download...', key, duration: 0 });
         downloadJobVideo(jobInstance.id).then(() => {
-            message.success({ content: 'Video download started', key, duration: 2 });
+            // the actual file transfer runs (and can still fail) in the
+            // browser's downloader, outside our visibility - stay neutral
+            message.success({ content: 'Video download requested', key, duration: 2 });
         }).catch((error: Error) => {
             message.destroy(key);
             notification.error({
                 message: 'Could not export the job video',
                 description: error.message,
             });
+        }).finally(() => {
+            exportVideoInFlight.current = false;
         });
     }, [jobInstance]);
 
@@ -132,9 +143,11 @@ function AnnotationMenuComponent(): JSX.Element {
         onClick: exportDataset,
     }, 20]);
 
-    // the signed video download endpoint only exists for video-backed
-    // (interpolation) jobs; image-set jobs never see the item
-    if (jobInstance.mode === 'interpolation') {
+    // the signed video download endpoint only exists for video-backed jobs;
+    // image-set jobs never see the item, and neither do 3D point-cloud jobs,
+    // which also report 'interpolation' mode but have no video file (same
+    // condition as export-dataset-modal)
+    if (jobInstance.mode === 'interpolation' && jobInstance.dimension === DimensionType.DIMENSION_2D) {
         menuItems.push([{
             key: Actions.EXPORT_VIDEO,
             label: 'Export video',
