@@ -299,6 +299,20 @@ JOB_VIDEO_PREDICTION_FAST_AUTH_TOKEN = os.getenv("CVAT_JOB_VIDEO_PREDICTION_FAST
 JOB_VIDEO_PREDICTION_SLOW_AUTH_TOKEN = os.getenv("CVAT_JOB_VIDEO_PREDICTION_SLOW_AUTH_TOKEN", "")
 "Per-pathway override of JOB_VIDEO_PREDICTION_AUTH_TOKEN for the 'slow' pathway."
 
+JOB_VIDEO_PREDICTION_VERSION = os.getenv("CVAT_JOB_VIDEO_PREDICTION_VERSION", "")
+(
+    "Optional pinned model version added to the prediction payload. Set it (e.g. "
+    "'owner/model:hash') to run a specific version via Replicate's POST "
+    "/v1/predictions; leave empty for the /v1/models/{owner}/{model}/predictions "
+    "latest-version endpoint or a self-hosted cog."
+)
+
+JOB_VIDEO_PREDICTION_FAST_VERSION = os.getenv("CVAT_JOB_VIDEO_PREDICTION_FAST_VERSION", "")
+"Per-pathway override of JOB_VIDEO_PREDICTION_VERSION for the 'fast' pathway."
+
+JOB_VIDEO_PREDICTION_SLOW_VERSION = os.getenv("CVAT_JOB_VIDEO_PREDICTION_SLOW_VERSION", "")
+"Per-pathway override of JOB_VIDEO_PREDICTION_VERSION for the 'slow' pathway."
+
 JOB_VIDEO_PREDICTION_AUTH_SCHEME = os.getenv("CVAT_JOB_VIDEO_PREDICTION_AUTH_SCHEME", "Bearer")
 (
     "Authorization scheme prefixed to the token (default 'Bearer', which Replicate "
