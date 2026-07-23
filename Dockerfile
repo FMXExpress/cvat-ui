@@ -198,6 +198,14 @@ COPY --chown=${USER} utils/ ${HOME}/utils
 COPY --chown=${USER} cvat/ ${HOME}/cvat
 COPY --chown=${USER} components/analytics/clickhouse/init.py ${HOME}/components/analytics/clickhouse/init.py
 
+# Belt-and-suspenders against CRLF line endings: a checkout on Windows (e.g.
+# GitHub Desktop with core.autocrlf=true) can bake \r into the shell scripts
+# copied above, which makes the container try to exec "bash\r" and crash-loop
+# with exit 127. Strip any trailing CR from the scripts we execute so the image
+# is correct regardless of the build host's git configuration.
+RUN sed -i 's/\r$//' ${HOME}/backend_entrypoint.sh ${HOME}/wait_for_deps.sh \
+    && find ${HOME}/backend_entrypoint.d -type f -exec sed -i 's/\r$//' {} +
+
 ARG COVERAGE_PROCESS_START
 RUN if [ "${COVERAGE_PROCESS_START}" ]; then \
         echo "import coverage; coverage.process_startup()" > /opt/venv/lib/python3.10/site-packages/coverage_subprocess.pth; \
