@@ -204,6 +204,7 @@ COPY --chown=${USER} components/analytics/clickhouse/init.py ${HOME}/components/
 # with exit 127. Strip any trailing CR from the scripts we execute so the image
 # is correct regardless of the build host's git configuration.
 RUN sed -i 's/\r$//' ${HOME}/backend_entrypoint.sh ${HOME}/wait_for_deps.sh \
+        ${HOME}/manage.py ${HOME}/rqscheduler.py \
     && find ${HOME}/backend_entrypoint.d -type f -exec sed -i 's/\r$//' {} +
 
 ARG COVERAGE_PROCESS_START

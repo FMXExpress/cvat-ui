@@ -10,3 +10,8 @@
 *.bash text eol=lf
 backend_entrypoint.sh text eol=lf
 wait_for_deps.sh text eol=lf
+
+# Python is executed directly via its shebang (e.g. backend_entrypoint.sh runs
+# "~/manage.py migrate"), so a CRLF shebang makes Linux look for "python3\r".
+# Keep all Python LF for the same reason as the scripts above.
+*.py text eol=lf
