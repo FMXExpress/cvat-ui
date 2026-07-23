@@ -2419,14 +2419,16 @@ class JobViewSet(viewsets.GenericViewSet, mixins.ListModelMixin, mixins.CreateMo
         if pathway:
             remote_url = self._resolve_video_prediction_remote_url(pathway=pathway)
             # only admin-configured pathways (fast/slow) get the server-side
-            # token
+            # token and version
             auth_token = self._resolve_video_prediction_auth_token(pathway=pathway)
+            version = self._resolve_video_prediction_version(pathway=pathway)
         else:
             remote_url = validated_data['remote_url']
             # never forward a configured token to a caller-supplied URL: a user
             # who can submit predictions could otherwise point remote_url at an
             # endpoint they control and capture the token
             auth_token = ''
+            version = ''
 
         remote_url = remote_url.rstrip('/')
         if not remote_url.endswith('/predictions'):
@@ -2453,6 +2455,12 @@ class JobViewSet(viewsets.GenericViewSet, mixins.ListModelMixin, mixins.CreateMo
             'input': validated_data['input'],
             'webhook': webhook_url,
         }
+        # Replicate's POST /v1/predictions runs a pinned version and requires
+        # "version" in the body; the POST /v1/models/{owner}/{model}/predictions
+        # endpoint (and self-hosted cogs) run without one, so only add it when
+        # a version is configured for this pathway.
+        if version:
+            outbound_payload['version'] = version
         outbound_headers = {
             'Prefer': 'respond-async',
             'Content-Type': 'application/json',
@@ -2738,6 +2746,23 @@ class JobViewSet(viewsets.GenericViewSet, mixins.ListModelMixin, mixins.CreateMo
             return ''
         default_token = getattr(settings, 'JOB_VIDEO_PREDICTION_AUTH_TOKEN', '') or ''
         return (per_pathway[pathway] or default_token).strip()
+
+    @staticmethod
+    def _resolve_video_prediction_version(*, pathway: str) -> str:
+        # Optional pinned model version for a configured pathway. When set it is
+        # added to the outbound payload so Replicate's POST /v1/predictions runs
+        # that exact version (e.g. 'owner/model:hash'); empty omits it, which is
+        # correct for the /v1/models/{owner}/{model}/predictions latest-version
+        # endpoint and for self-hosted cogs. Configured pathways only, mirroring
+        # the URL and token resolvers.
+        per_pathway = {
+            'fast': getattr(settings, 'JOB_VIDEO_PREDICTION_FAST_VERSION', '') or '',
+            'slow': getattr(settings, 'JOB_VIDEO_PREDICTION_SLOW_VERSION', '') or '',
+        }
+        if pathway not in per_pathway:
+            return ''
+        default_version = getattr(settings, 'JOB_VIDEO_PREDICTION_VERSION', '') or ''
+        return (per_pathway[pathway] or default_version).strip()
 
     @extend_schema(
         summary='Get video prediction request state',
