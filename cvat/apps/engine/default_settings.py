@@ -285,6 +285,26 @@ JOB_VIDEO_PREDICTION_FAST_URL = os.getenv("CVAT_JOB_VIDEO_PREDICTION_FAST_URL", 
 JOB_VIDEO_PREDICTION_SLOW_URL = os.getenv("CVAT_JOB_VIDEO_PREDICTION_SLOW_URL", "")
 "Outbound remote URL for the 'slow' video prediction pathway."
 
+JOB_VIDEO_PREDICTION_AUTH_TOKEN = os.getenv("CVAT_JOB_VIDEO_PREDICTION_AUTH_TOKEN", "")
+(
+    "Optional bearer token sent as the Authorization header when submitting a "
+    "video prediction request. Empty means no Authorization header (unauthenticated "
+    "remotes such as a self-hosted SAM2 cog keep working); set a Replicate API "
+    "token (r8_...) to call api.replicate.com."
+)
+
+JOB_VIDEO_PREDICTION_FAST_AUTH_TOKEN = os.getenv("CVAT_JOB_VIDEO_PREDICTION_FAST_AUTH_TOKEN", "")
+"Per-pathway override of JOB_VIDEO_PREDICTION_AUTH_TOKEN for the 'fast' pathway."
+
+JOB_VIDEO_PREDICTION_SLOW_AUTH_TOKEN = os.getenv("CVAT_JOB_VIDEO_PREDICTION_SLOW_AUTH_TOKEN", "")
+"Per-pathway override of JOB_VIDEO_PREDICTION_AUTH_TOKEN for the 'slow' pathway."
+
+JOB_VIDEO_PREDICTION_AUTH_SCHEME = os.getenv("CVAT_JOB_VIDEO_PREDICTION_AUTH_SCHEME", "Bearer")
+(
+    "Authorization scheme prefixed to the token (default 'Bearer', which Replicate "
+    "accepts; use 'Token' for services that require it, or empty to send the raw token)."
+)
+
 JOB_VIDEO_PREDICTION_ALLOW_REMOTE_URL_INPUT = to_bool(
     os.getenv("CVAT_JOB_VIDEO_PREDICTION_ALLOW_REMOTE_URL_INPUT", True)
 )
