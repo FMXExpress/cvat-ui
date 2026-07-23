@@ -2418,9 +2418,15 @@ class JobViewSet(viewsets.GenericViewSet, mixins.ListModelMixin, mixins.CreateMo
         pathway = validated_data.get('pathway')
         if pathway:
             remote_url = self._resolve_video_prediction_remote_url(pathway=pathway)
+            # only admin-configured pathways (fast/slow) get the server-side
+            # token
+            auth_token = self._resolve_video_prediction_auth_token(pathway=pathway)
         else:
             remote_url = validated_data['remote_url']
-        auth_token = self._resolve_video_prediction_auth_token(pathway=pathway or '')
+            # never forward a configured token to a caller-supplied URL: a user
+            # who can submit predictions could otherwise point remote_url at an
+            # endpoint they control and capture the token
+            auth_token = ''
 
         remote_url = remote_url.rstrip('/')
         if not remote_url.endswith('/predictions'):
@@ -2717,17 +2723,21 @@ class JobViewSet(viewsets.GenericViewSet, mixins.ListModelMixin, mixins.CreateMo
 
     @staticmethod
     def _resolve_video_prediction_auth_token(*, pathway: str) -> str:
-        # Optional bearer token forwarded as the Authorization header. Empty by
-        # default (nothing is sent), so an unauthenticated remote such as a
-        # self-hosted SAM2 cog is unaffected. A per-pathway token overrides the
-        # shared default, letting Fast and Slow target different services (e.g.
-        # Fast=Replicate with a token, Slow=self-hosted with none).
-        default_token = getattr(settings, 'JOB_VIDEO_PREDICTION_AUTH_TOKEN', '') or ''
+        # Optional bearer token forwarded as the Authorization header, ONLY for
+        # admin-configured pathways (fast/slow) - never for caller-supplied
+        # remote_url, which would leak the token to a URL the user controls.
+        # Empty by default (nothing is sent), so an unauthenticated remote such
+        # as a self-hosted SAM2 cog is unaffected. A per-pathway token overrides
+        # the shared default, letting Fast and Slow target different services
+        # (e.g. Fast=Replicate with a token, Slow=self-hosted with none).
         per_pathway = {
             'fast': getattr(settings, 'JOB_VIDEO_PREDICTION_FAST_AUTH_TOKEN', '') or '',
             'slow': getattr(settings, 'JOB_VIDEO_PREDICTION_SLOW_AUTH_TOKEN', '') or '',
         }
-        return (per_pathway.get(pathway, '') or default_token).strip()
+        if pathway not in per_pathway:
+            return ''
+        default_token = getattr(settings, 'JOB_VIDEO_PREDICTION_AUTH_TOKEN', '') or ''
+        return (per_pathway[pathway] or default_token).strip()
 
     @extend_schema(
         summary='Get video prediction request state',
