@@ -1,2 +1,17 @@
 # Auto detect text files and perform LF normalization
 * text=auto
+
+# Shell scripts must stay LF even on a Windows checkout. GitHub Desktop and
+# git-for-windows default to core.autocrlf=true, which turns the "* text=auto"
+# rule above into a CRLF conversion on checkout. A CRLF entrypoint makes the
+# Linux container try to exec an interpreter literally named "bash\r" and
+# crash-loop with exit 127, so pin every executed script to LF.
+*.sh text eol=lf
+*.bash text eol=lf
+backend_entrypoint.sh text eol=lf
+wait_for_deps.sh text eol=lf
+
+# Python is executed directly via its shebang (e.g. backend_entrypoint.sh runs
+# "~/manage.py migrate"), so a CRLF shebang makes Linux look for "python3\r".
+# Keep all Python LF for the same reason as the scripts above.
+*.py text eol=lf
